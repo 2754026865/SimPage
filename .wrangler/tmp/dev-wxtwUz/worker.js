@@ -714,7 +714,7 @@ async function handleGetAdminData(request, env) {
 __name(handleGetAdminData, "handleGetAdminData");
 async function handleDataUpdate(request, env) {
   try {
-    const { apps, bookmarks, settings } = await request.json();
+    const { apps, bookmarks, settings, stats } = await request.json();
     const normalisedApps = normaliseCollection(apps, { label: "\u5E94\u7528", type: "apps" });
     const normalisedBookmarks = normaliseCollection(bookmarks, { label: "\u4E66\u7B7E", type: "bookmarks" });
     const normalisedSettings = normaliseSettingsInput(settings);
@@ -728,7 +728,6 @@ async function handleDataUpdate(request, env) {
       apps: normalisedApps,
       bookmarks: normalisedBookmarks,
       stats: normalisedStats,
-      // 🆕 使用新的 stats
       admin: existing.admin
     };
     await writeFullData(env, payload);

@@ -674,14 +674,23 @@ function updateRunningDays(runningDays) {
     : 0;
   
   runningDaysElement.textContent = days;
-  footerMetaElement.hidden = false;
+  
+  // 🆕 只有当天数大于 0 时才显示
+  if (days > 0) {
+    footerMetaElement.hidden = false;
+  } else {
+    footerMetaElement.hidden = true;
+  }
+  
   refreshFooterVisibility();
 }
+
 
 function refreshFooterVisibility() {
   if (!footerElement) return;
   const hasContent = Boolean(footerContentValue);
-  const shouldShowFooter = hasContent || visitorCountKnown;
+  const hasRunningDays = runningDaysElement && runningDaysElement.textContent !== "0"; // 🆕 修改
+  const shouldShowFooter = hasContent || hasRunningDays; // 🆕 修改
   footerElement.hidden = !shouldShowFooter;
 }
 

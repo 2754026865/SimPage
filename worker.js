@@ -239,7 +239,7 @@ async function handleGetAdminData(request, env) {
 
 async function handleDataUpdate(request, env) {
   try {
-    const { apps, bookmarks, settings } = await request.json();
+    const { apps, bookmarks, settings, stats } = await request.json(); // ⚠️ 添加 stats
     const normalisedApps = normaliseCollection(apps, { label: "应用", type: "apps" });
     const normalisedBookmarks = normaliseCollection(bookmarks, { label: "书签", type: "bookmarks" });
     const normalisedSettings = normaliseSettingsInput(settings);
@@ -255,7 +255,7 @@ async function handleDataUpdate(request, env) {
       settings: normalisedSettings,
       apps: normalisedApps,
       bookmarks: normalisedBookmarks,
-      stats: normalisedStats, // 🆕 使用新的 stats
+      stats: normalisedStats,
       admin: existing.admin,
     };
 
@@ -265,6 +265,7 @@ async function handleDataUpdate(request, env) {
     return jsonResponse({ success: false, message: error.message }, 400);
   }
 }
+
 
 async function handlePasswordUpdate(request, env) {
   const body = await request.json().catch(() => null);

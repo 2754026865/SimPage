@@ -381,9 +381,9 @@ function applySettingsToInputs(settings) {
 
   updateWeatherSummary(normalisedWeather);
   updatePageIdentity(settings);
-  // 🆕 应用运行开始日期
+  // 应该从 state.stats 中获取
   if (siteStartDateInput) {
-    siteStartDateInput.value = settings.siteStartDate || "";
+    siteStartDateInput.value = state.stats?.siteStartDate || "";
   }
 }
 
@@ -916,7 +916,8 @@ function updateStateFromResponse(data) {
   state.apps = normaliseIncoming(data?.apps, "apps");
   state.bookmarks = normaliseIncoming(data?.bookmarks, "bookmarks");
   state.settings = normaliseSettingsIncoming(data?.settings);
-  state.stats = { // 🆕 添加
+  // ⚠️ 关键修复：正确设置 stats
+  state.stats = {
     siteStartDate: data?.siteStartDate || null,
   };
   applySettingsToInputs(state.settings);

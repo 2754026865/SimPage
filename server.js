@@ -824,6 +824,9 @@ function sanitiseData(fullData) {
       wallpaperUrl = trimmed;
     }
   }
+  // ⚠️ 关键修复：添加这两行！
+  const siteStartDate = fullData.stats?.siteStartDate || null;
+  const runningDays = calculateRunningDays(siteStartDate);
 
   const settings = {
     siteName:
