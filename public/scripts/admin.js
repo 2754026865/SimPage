@@ -38,6 +38,9 @@ const siteWeatherCityInput = document.getElementById("site-weather-city");
 const siteWeatherApiKeyInput = document.getElementById("site-weather-api-key");
 const weatherApiTestButton = document.getElementById("weather-api-test-button");
 const siteWeatherSummary = document.getElementById("site-weather-summary");
+const siteGlassOpacityInput = document.getElementById("site-glass-opacity"); // 🆕 添加
+const opacityValueDisplay = document.getElementById("opacity-value-display"); // 🆕 添加
+const siteWallpaperUrlInput = document.getElementById("site-wallpaper-url"); // 🆕 添加
 const categorySuggestions = document.getElementById("category-suggestions");
 const authOverlay = document.getElementById("auth-overlay");
 const loginForm = document.getElementById("login-form");
@@ -190,6 +193,8 @@ const defaultSettings = {
   greeting: siteGreetingInput && siteGreetingInput.value.trim() ? siteGreetingInput.value.trim() : "",
   footer: siteFooterInput && siteFooterInput.value ? normaliseFooterValue(siteFooterInput.value) : "",
   weather: createDefaultWeatherSettings(),
+  glassOpacity: 40, // 🆕 添加默认透明度
+  wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
 };
 
 const state = {
@@ -201,6 +206,8 @@ const state = {
     greeting: defaultSettings.greeting,
     footer: defaultSettings.footer,
     weather: { ...defaultSettings.weather },
+    glassOpacity: defaultSettings.glassOpacity, // 🆕 添加
+    wallpaperUrl: defaultSettings.wallpaperUrl, // 🆕 添加
   },
 };
 
@@ -274,6 +281,8 @@ function normaliseSettingsIncoming(input) {
     greeting: defaultSettings.greeting,
     footer: defaultSettings.footer,
     weather: { ...defaultSettings.weather },
+    glassOpacity: defaultSettings.glassOpacity, // 🆕 添加
+    wallpaperUrl: defaultSettings.wallpaperUrl, // 🆕 添加
   };
 
   if (!input || typeof input !== "object") {
@@ -291,6 +300,16 @@ function normaliseSettingsIncoming(input) {
   }
   if (typeof input.footer === "string") {
     prepared.footer = normaliseFooterValue(input.footer);
+  }
+  // 🆕 添加透明度处理
+  if (typeof input.glassOpacity === "number") {
+    const opacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
+    prepared.glassOpacity = opacity;
+  }
+
+  // 🆕 添加壁纸 URL 处理
+  if (typeof input.wallpaperUrl === "string") {
+    prepared.wallpaperUrl = input.wallpaperUrl.trim();
   }
 
   if (input.weather && typeof input.weather === "object") {
@@ -564,6 +583,20 @@ function applySettingsToInputs(settings) {
   if (siteGreetingInput) siteGreetingInput.value = settings.greeting || "";
   if (siteFooterInput) siteFooterInput.value = settings.footer || "";
   updateFooterPreview(settings.footer);
+
+  // 🆕 应用透明度设置
+  const opacity = typeof settings.glassOpacity === "number" ? settings.glassOpacity : 40;
+  if (siteGlassOpacityInput) {
+    siteGlassOpacityInput.value = opacity;
+  }
+  if (opacityValueDisplay) {
+    opacityValueDisplay.textContent = `${opacity}%`;
+  }
+  // 🆕 应用壁纸 URL 设置
+  if (siteWallpaperUrlInput) {
+    siteWallpaperUrlInput.value = settings.wallpaperUrl || "";
+  }
+
 
   const normalisedWeather = normaliseWeatherSettingsIncoming(settings.weather);
   state.settings.weather = normalisedWeather;
@@ -1098,6 +1131,8 @@ function buildSettingsPayload(settings) {
     greeting: (settings.greeting || "").trim(),
     footer: normaliseFooterValue(settings.footer),
     weather: buildWeatherPayload(settings.weather),
+    glassOpacity: typeof settings.glassOpacity === "number" ? settings.glassOpacity : 40, // 🆕 添加
+    wallpaperUrl: (settings.wallpaperUrl || "").trim(), // 🆕 添加
   };
 }
 
@@ -1585,6 +1620,28 @@ function bindEvents() {
       openEditor(target);
     });
   });
+
+  // 🆕 添加透明度滑块事件
+  if (siteGlassOpacityInput) {
+    siteGlassOpacityInput.addEventListener("input", () => {
+      const value = parseInt(siteGlassOpacityInput.value, 10);
+      if (opacityValueDisplay) {
+        opacityValueDisplay.textContent = `${value}%`;
+      }
+      state.settings.glassOpacity = value;
+      markDirty();
+      setStatus("容器透明度已更新，记得保存。", "neutral");
+    });
+  }
+
+  // 🆕 壁纸 URL 输入框事件
+  if (siteWallpaperUrlInput) {
+    siteWallpaperUrlInput.addEventListener("input", () => {
+      state.settings.wallpaperUrl = siteWallpaperUrlInput.value.trim();
+      markDirty();
+      setStatus("壁纸 URL 已更新，记得保存。", "neutral");
+    });
+  }
 
   if (saveButton) {
     saveButton.addEventListener("click", saveChanges);
