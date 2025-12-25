@@ -5,6 +5,7 @@ import manifest from "__STATIC_CONTENT_MANIFEST";
 const assetManifest = JSON.parse(manifest);
 const router = Router();
 
+
 // =================================================================================
 // Constants and Defaults
 // =================================================================================
@@ -15,11 +16,13 @@ const BASE_DEFAULT_SETTINGS = Object.freeze({
   greeting: "",
   footer: "",
   glassOpacity: 40, // 🆕 添加默认透明度
+  useWallpaper: true, // 🆕 添加
   wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加默认壁纸 URL
 });
 
 const DEFAULT_STATS = Object.freeze({
   visitorCount: 0,
+  siteStartDate: null, // 🆕 添加
 });
 
 const DEFAULT_WEATHER_CONFIG = Object.freeze({
@@ -242,11 +245,17 @@ async function handleDataUpdate(request, env) {
     const normalisedSettings = normaliseSettingsInput(settings);
 
     const existing = await readFullData(env);
+    // 🆕 处理 stats
+    const normalisedStats = {
+      visitorCount: existing.stats?.visitorCount || 0,
+      siteStartDate: typeof stats?.siteStartDate === "string" ? stats.siteStartDate : null,
+    };
+
     const payload = {
       settings: normalisedSettings,
       apps: normalisedApps,
       bookmarks: normalisedBookmarks,
-      stats: existing.stats,
+      stats: normalisedStats, // 🆕 使用新的 stats
       admin: existing.admin,
     };
 
@@ -295,6 +304,31 @@ async function handlePasswordUpdate(request, env) {
   await writeFullData(env, updatedData);
   return jsonResponse({ success: true, message: "密码已更新，下次登录请使用新密码。" });
 }
+
+/**
+ * 🆕 计算网站运行天数
+ */
+function calculateRunningDays(startDate) {
+  if (!startDate) return 0;
+  
+  try {
+    const start = new Date(startDate);
+    const now = new Date();
+    
+    // 验证日期有效性
+    if (isNaN(start.getTime())) return 0;
+    
+    // 计算天数差
+    const diffTime = now - start;
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    return Math.max(0, diffDays);
+  } catch (error) {
+    console.error("计算运行天数失败:", error);
+    return 0;
+  }
+}
+
 
 function handleFetchLogo(request, env) {
   try {
@@ -404,6 +438,12 @@ function sanitiseData(fullData) {
   if (typeof sourceSettings.glassOpacity === "number") {
     glassOpacity = Math.max(0, Math.min(100, Math.round(sourceSettings.glassOpacity)));
   }
+  // 🆕 处理 useWallpaper
+  let useWallpaper = true;
+  if (typeof sourceSettings.useWallpaper === "boolean") {
+    useWallpaper = sourceSettings.useWallpaper;
+  }
+
   // 🆕 处理壁纸 URL
   let wallpaperUrl = "https://bing.img.run/uhd.php";
   if (typeof sourceSettings.wallpaperUrl === "string") {
@@ -412,6 +452,9 @@ function sanitiseData(fullData) {
       wallpaperUrl = trimmed;
     }
   }
+  // 🆕 计算运行天数
+  const siteStartDate = fullData.stats?.siteStartDate || null;
+  const runningDays = calculateRunningDays(siteStartDate);
 
   return {
     settings: {
@@ -421,11 +464,14 @@ function sanitiseData(fullData) {
       footer: normaliseFooterValue(sourceSettings.footer),
       weather: { city: weather.city },
       glassOpacity, // 🆕 添加
+      useWallpaper, // 🆕 添加
       wallpaperUrl, // 🆕 添加
     },
     apps: fullData.apps?.map((item) => ({ ...item })) || [],
     bookmarks: fullData.bookmarks?.map((item) => ({ ...item })) || [],
     visitorCount: fullData.stats?.visitorCount || DEFAULT_STATS.visitorCount,
+    runningDays, // 🆕 添加
+    siteStartDate, // 🆕 添加（用于后台编辑）
     config: {
       weather: {
         defaultCity: DEFAULT_WEATHER_CONFIG.city,
@@ -443,6 +489,12 @@ function normaliseSettingsInput(input) {
   if (typeof input?.glassOpacity === "number") {
     glassOpacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
   }
+  // 🆕 处理 useWallpaper
+  let useWallpaper = true;
+  if (typeof input?.useWallpaper === "boolean") {
+    useWallpaper = input.useWallpaper;
+  }
+
   // 🆕 处理壁纸 URL
   let wallpaperUrl = "https://bing.img.run/uhd.php";
   if (typeof input?.wallpaperUrl === "string") {
@@ -459,6 +511,7 @@ function normaliseSettingsInput(input) {
     footer: normaliseFooterValue(input?.footer),
     weather: normaliseWeatherSettingsInput(input?.weather),
     glassOpacity, // 🆕 添加
+    useWallpaper, // 🆕 添加
     wallpaperUrl, // 🆕 添加
   };
 }
@@ -559,9 +612,10 @@ async function createDefaultData() {
       "greeting": "",
       "footer": "欢迎来到我的主页",
       "glassOpacity": 40, // 🆕 添加
+      "useWallpaper": true, // 🆕 添加
       "wallpaperUrl": "https://bing.img.run/uhd.php", // 🆕 添加
       "weather": {
-        "city": ["北京", "上海"]
+        "city": ["北京", "青岛"]
       }
     },
     "apps": [
@@ -579,7 +633,8 @@ async function createDefaultData() {
       { "id": "bookmark-juejin", "name": "稀土掘金", "url": "https://juejin.cn/", "description": "开发者技术社区与优质内容。", "icon": "💡", "category": "技术社区" }
     ],
     "stats": {
-      "visitorCount": 0
+      "visitorCount": 0,
+      "siteStartDate": null // 🆕 添加
     },
     "admin": admin
   };

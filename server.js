@@ -22,10 +22,14 @@ const BASE_DEFAULT_SETTINGS = Object.freeze({
   siteLogo: "",
   greeting: "",
   footer: "",
+  useWallpaper: true, // 🆕 添加
+  wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
+
 });
 
 const DEFAULT_STATS = {
   visitorCount: 0,
+  siteStartDate: null, // 🆕 添加
 };
 
 const DEFAULT_WEATHER_CONFIG = Object.freeze({
@@ -82,6 +86,26 @@ async function readDataFileMeta() {
     };
   } catch (_error) {
     return null;
+  }
+}
+
+// 2. 添加计算函数（与 worker.js 相同）
+function calculateRunningDays(startDate) {
+  if (!startDate) return 0;
+  
+  try {
+    const start = new Date(startDate);
+    const now = new Date();
+    
+    if (isNaN(start.getTime())) return 0;
+    
+    const diffTime = now - start;
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    return Math.max(0, diffDays);
+  } catch (error) {
+    console.error("计算运行天数失败:", error);
+    return 0;
   }
 }
 
@@ -535,9 +559,21 @@ function normaliseStatsFromFile(rawStats) {
     return { value: fallback, mutated: true };
   }
   const normalisedVisitorCount = Math.floor(numericVisitorCount);
-  const value = { visitorCount: normalisedVisitorCount };
+  // 🆕 处理 siteStartDate
+  const siteStartDate = typeof rawStats.siteStartDate === "string" 
+    ? rawStats.siteStartDate 
+    : null;
+  
+  const value = { 
+    visitorCount: normalisedVisitorCount,
+    siteStartDate, // 🆕 添加
+  };
+
+  
   const mutated =
-    typeof rawStats.visitorCount !== "number" || normalisedVisitorCount !== numericVisitorCount;
+    typeof rawStats.visitorCount !== "number" || 
+    normalisedVisitorCount !== numericVisitorCount ||
+    rawStats.siteStartDate !== siteStartDate; // 🆕 添加
   return { value, mutated };
 }
 
@@ -559,6 +595,9 @@ function createDefaultSettings() {
   return {
     ...BASE_DEFAULT_SETTINGS,
     weather: createDefaultWeatherSettings(),
+    glassOpacity: 40, // 🆕 添加
+    useWallpaper: true, // 🆕 添加
+    wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
   };
 }
 
@@ -690,6 +729,9 @@ function buildSettingsFromFile(rawSettings) {
     greeting: defaults.greeting,
     footer: defaults.footer,
     weather: createDefaultWeatherSettings(),
+    glassOpacity: defaults.glassOpacity, // 🆕 添加
+    useWallpaper: defaults.useWallpaper, // 🆕 添加
+    wallpaperUrl: defaults.wallpaperUrl, // 🆕 添加
   };
 
   const siteNameRaw = typeof rawSettings.siteName === "string" ? rawSettings.siteName : "";
@@ -724,6 +766,30 @@ function buildSettingsFromFile(rawSettings) {
     mutated = true;
   }
 
+  // 🆕 添加 glassOpacity 处理
+  if (typeof rawSettings.glassOpacity === "number") {
+    const opacity = Math.max(0, Math.min(100, Math.round(rawSettings.glassOpacity)));
+    value.glassOpacity = opacity;
+    if (opacity !== rawSettings.glassOpacity) {
+      mutated = true;
+    }
+  } else if (rawSettings.glassOpacity !== undefined) {
+    mutated = true;
+  }
+  // 🆕 添加 useWallpaper 处理
+  if (typeof rawSettings.useWallpaper === "boolean") {
+    value.useWallpaper = rawSettings.useWallpaper;
+  } else if (rawSettings.useWallpaper !== undefined) {
+    mutated = true;
+  }
+  // 🆕 添加 wallpaperUrl 处理
+  const wallpaperUrlRaw = typeof rawSettings.wallpaperUrl === "string" ? rawSettings.wallpaperUrl : "";
+  const wallpaperUrl = wallpaperUrlRaw.trim();
+  value.wallpaperUrl = wallpaperUrl;
+  if (wallpaperUrl !== wallpaperUrlRaw) {
+    mutated = true;
+  }
+
   const weatherInfo = normaliseWeatherSettingsFromFile(rawSettings);
   value.weather = weatherInfo.value;
   mutated = mutated || weatherInfo.mutated;
@@ -739,6 +805,25 @@ function sanitiseData(fullData) {
       : defaults;
 
   const weather = normaliseWeatherSettingsValue(sourceSettings.weather);
+
+  // 🆕 处理 glassOpacity
+  let glassOpacity = 40;
+  if (typeof sourceSettings.glassOpacity === "number") {
+    glassOpacity = Math.max(0, Math.min(100, Math.round(sourceSettings.glassOpacity)));
+  }
+  // 🆕 处理 useWallpaper
+  let useWallpaper = true;
+  if (typeof sourceSettings.useWallpaper === "boolean") {
+    useWallpaper = sourceSettings.useWallpaper;
+  }
+  // 🆕 处理 wallpaperUrl
+  let wallpaperUrl = "https://bing.img.run/uhd.php";
+  if (typeof sourceSettings.wallpaperUrl === "string") {
+    const trimmed = sourceSettings.wallpaperUrl.trim();
+    if (trimmed) {
+      wallpaperUrl = trimmed;
+    }
+  }
 
   const settings = {
     siteName:
@@ -757,6 +842,9 @@ function sanitiseData(fullData) {
     weather: {
       city: weather.city,
     },
+    glassOpacity, // 🆕 添加
+    useWallpaper, // 🆕 添加
+    wallpaperUrl, // 🆕 添加
   };
 
   return {
@@ -767,6 +855,8 @@ function sanitiseData(fullData) {
       typeof fullData.stats?.visitorCount === "number"
         ? fullData.stats.visitorCount
         : DEFAULT_STATS.visitorCount,
+    runningDays, // 🆕 添加
+    siteStartDate, // 🆕 添加
     config: {
       weather: {
         defaultCity: runtimeConfig.weather.defaultCity,
@@ -777,7 +867,7 @@ function sanitiseData(fullData) {
 
 async function handleDataUpdate(req, res, next) {
   try {
-    const { apps, bookmarks, settings } = req.body || {};
+    const { apps, bookmarks, settings, stats } = req.body || {}; // 🆕 添加 stats
 
     const normalisedApps = normaliseCollection(apps, { label: "应用", type: "apps" });
     const normalisedBookmarks = normaliseCollection(bookmarks, {
@@ -794,11 +884,17 @@ async function handleDataUpdate(req, res, next) {
     }
 
     const existing = await readFullData();
+    // 🆕 处理 stats
+    const normalisedStats = {
+      visitorCount: existing.stats?.visitorCount || 0,
+      siteStartDate: typeof stats?.siteStartDate === "string" ? stats.siteStartDate : null,
+    };
+
     const payload = {
       settings: normalisedSettings,
       apps: normalisedApps,
       bookmarks: normalisedBookmarks,
-      stats: existing.stats,
+      stats: normalisedStats, // 🆕 使用新的 stats
       admin: existing.admin,
     };
 
@@ -892,6 +988,25 @@ function normaliseSettingsInput(input) {
   const greeting = typeof input?.greeting === "string" ? input.greeting.trim() : "";
   const footer = normaliseFooterValue(input?.footer);
 
+  // 🆕 添加 glassOpacity 处理
+  let glassOpacity = 40;
+  if (typeof input?.glassOpacity === "number") {
+    glassOpacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
+  }
+  // 🆕 添加 useWallpaper 处理
+  let useWallpaper = true;
+  if (typeof input?.useWallpaper === "boolean") {
+    useWallpaper = input.useWallpaper;
+  }
+  // 🆕 添加 wallpaperUrl 处理
+  let wallpaperUrl = "https://bing.img.run/uhd.php";
+  if (typeof input?.wallpaperUrl === "string") {
+    const trimmed = input.wallpaperUrl.trim();
+    if (trimmed) {
+      wallpaperUrl = trimmed;
+    }
+  }
+
   let weatherSource = null;
   if (input && typeof input === "object") {
     if (input.weather && typeof input.weather === "object") {
@@ -916,6 +1031,9 @@ function normaliseSettingsInput(input) {
     greeting,
     footer,
     weather,
+    glassOpacity, // 🆕 添加
+    useWallpaper, // 🆕 添加
+    wallpaperUrl, // 🆕 添加
   };
 }
 

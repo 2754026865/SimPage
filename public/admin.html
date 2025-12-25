@@ -92,17 +92,32 @@
               调整前台界面容器的透明度，数值越小越透明（建议范围：30%-60%）
             </p>
           </div>
+          <!-- 在容器透明度字段之后添加 -->
+           <div class="field field-span-2">
+            <span>网站运行开始日期</span>
+            <input type="date" id="site-start-date" autocomplete="off" />
+            <p class="field-description">设置网站开始运行的日期，用于计算"已平稳运行 X 天"。留空则不显示运行天数。</p>
+           </div>
 
           <!-- 🆕 添加壁纸 URL 输入框 -->
           <div class="field field-span-2">
-            <span>壁纸背景 URL</span>
+            <span>背景壁纸设置</span>
+            <!-- 🆕 添加开关 -->
+             <div class="wallpaper-toggle">
+              <label class="toggle-switch">
+              <input type="checkbox" id="site-use-wallpaper" checked />
+              <span class="toggle-slider"></span>
+                <span class="toggle-label">启用背景壁纸</span>
+              </label>
+             </div>
+            <!-- 原有的 URL 输入框 -->
             <input
               type="url"
               id="site-wallpaper-url"
               autocomplete="off"
               placeholder="https://bing.img.run/uhd.php（默认为 Bing 每日壁纸）"
             />
-            <p class="field-description">自定义壁纸背景图片 URL，留空则使用默认的 Bing 每日壁纸。支持任何可访问的图片链接。</p>
+            <p class="field-description">开启后可自定义壁纸背景图片 URL，关闭则显示原始渐变背景。支持任何可访问的图片链接。</p>
             
 
           </div>

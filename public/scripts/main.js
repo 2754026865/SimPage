@@ -1,4 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
+import { formatLunar } from "./lunar.js"; // 🆕 导入农历工具
 import "./theme-toggle.js";
 
 const siteNameElement = document.getElementById("site-name");
@@ -29,13 +30,56 @@ const backToTopButton = document.getElementById("back-to-top");
 const footerElement = document.getElementById("site-footer");
 const footerContentElement = document.getElementById("site-footer-content");
 const footerMetaElement = document.getElementById("site-footer-meta");
-const visitorCountElement = document.getElementById("site-visitor-count");
+const runningDaysElement = document.getElementById("site-running-days");
 const faviconLink = document.getElementById("site-favicon");
+
+const dynamicBadgeElement = document.getElementById("dynamic-badge"); // 🆕
+const lunarDateElement = document.getElementById("lunar-date"); // 🆕
+const todayProgressElement = document.getElementById("today-progress"); // 🆕
+
+// 🆕 浮动卡片元素引用
+const floatingCard = document.getElementById("floating-summary");
+const compactBadge = document.getElementById("compact-badge");
+const compactProgress = document.getElementById("compact-progress");
+const compactWeather = document.getElementById("compact-weather");
+const expandedBadge = document.getElementById("expanded-badge");
+const expandedTime = document.getElementById("expanded-time");
+const expandedDate = document.getElementById("expanded-date");
+const expandedLunar = document.getElementById("expanded-lunar");
+const expandedProgressFull = document.getElementById("expanded-progress-full");
+const expandedWeather = document.getElementById("expanded-weather");
+
 
 const collectionPanels = {
   apps: appsPanel,
   bookmarks: bookmarksPanel,
 };
+
+
+/**
+ * 🆕 计算网站运行天数
+ */
+function calculateRunningDays(startDate) {
+  if (!startDate) return 0;
+  
+  try {
+    const start = new Date(startDate);
+    const now = new Date();
+    
+    // 验证日期有效性
+    if (isNaN(start.getTime())) return 0;
+    
+    // 计算天数差
+    const diffTime = now - start;
+    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+    
+    return Math.max(0, diffDays);
+  } catch (error) {
+    console.error("计算运行天数失败:", error);
+    return 0;
+  }
+}
+
 
 function replaceChildrenSafe(target, ...nodes) {
   if (!target) return;
@@ -63,6 +107,7 @@ const DEFAULT_SITE_SETTINGS = {
   footer: "",
   weather: { ...defaultWeather },
   glassOpacity: 40, // 🆕 添加默认透明度
+  useWallpaper: true, // 🆕 添加
   wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
 };
 
@@ -76,8 +121,6 @@ const BACK_TO_TOP_THRESHOLD = 320;
 let customGreeting = "";
 let yiyanMessage = "";
 let footerContentValue = "";
-let visitorCountKnown = false;
-let visitorCountValue = 0;
 
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
@@ -92,7 +135,6 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   weekday: "long",
 });
 
-const visitorCountFormatter = new Intl.NumberFormat("zh-CN");
 
 const runtimeConfig = {
   weather: {
@@ -172,16 +214,206 @@ function moveSearchEngineSelection(offset) {
   nextButton.focus();
 }
 
+/**
+ * 🆕 根据时间获取动态标签
+ */
+function getDynamicBadge(hour) {
+  if (hour >= 5 && hour < 9) {
+    return "☀️ 早安";
+  } else if (hour >= 9 && hour < 14) {
+    return "🌞 午安";
+  } else if (hour >= 14 && hour < 18) {
+    return "🌤️ 下午好";
+  } else if (hour >= 18 && hour < 22) {
+    return "🌙 晚安";
+  } else {
+    return "⭐ 夜深了";
+  }
+}
+
+/**
+ * 🆕 计算本年第几周
+ */
+function getWeekNumber(date) {
+  const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
+  const pastDaysOfYear = (date - firstDayOfYear) / 86400000;
+  return Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+}
+
+/**
+ * 🆕 计算今日进度
+ */
+function getTodayProgress() {
+  const now = new Date();
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const end = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const progress = ((now - start) / (end - start)) * 100;
+  return Math.round(progress);
+}
+
+/**
+ * 🆕 渲染进度条
+ */
+function renderProgressBar(progress) {
+  const totalBlocks = 10;
+  const filledBlocks = Math.round((progress / 100) * totalBlocks);
+  const emptyBlocks = totalBlocks - filledBlocks;
+  
+  const filled = '▓'.repeat(filledBlocks);
+  const empty = '░'.repeat(emptyBlocks);
+  
+  return `💡 今日已过 ${progress}% ${filled}${empty}`;
+}
+
+/**
+ * 🆕 节流函数 - 优化滚动性能
+ */
+function throttle(func, delay) {
+  let lastCall = 0;
+  return function (...args) {
+    const now = Date.now();
+    if (now - lastCall >= delay) {
+      lastCall = now;
+      func.apply(this, args);
+    }
+  };
+}
+
+/**
+ * 🆕 处理浮动卡片显示/隐藏
+ */
+const FLOATING_THRESHOLD = 300; // 滚动300px后显示
+
+function handleFloatingVisibility() {
+  if (!floatingCard) return;
+  
+  const scrollY = window.scrollY;
+  if (scrollY > FLOATING_THRESHOLD) {
+    floatingCard.classList.add('is-visible');
+  } else {
+    floatingCard.classList.remove('is-visible');
+  }
+}
+
+/**
+ * 🆕 提取天气温度信息
+ */
+function extractWeatherTemp(weatherText) {
+  if (!weatherText) return '🌤️';
+  
+  // 提取温度
+  const tempMatch = weatherText.match(/(-?\d+)°C/);
+  const temp = tempMatch ? `${tempMatch[1]}°C` : '';
+  
+  // 提取天气图标
+  const weatherIcon = weatherText.includes('晴') ? '☀️' : 
+                     weatherText.includes('云') ? '☁️' :
+                     weatherText.includes('雨') ? '🌧️' :
+                     weatherText.includes('雪') ? '❄️' : '🌤️';
+  
+  return temp ? `${weatherIcon} ${temp}` : weatherIcon;
+}
+
+/**
+ * 🆕 更新浮动卡片内容
+ */
+function updateFloatingCard() {
+  if (!floatingCard) return;
+  
+  const now = new Date();
+  const hour = now.getHours();
+  
+  // 获取动态数据
+  const badge = getDynamicBadge(hour);
+  const time = timeFormatter.format(now);
+  const timeShort = time.substring(0, 5); // 只取 HH:MM
+  const date = dateFormatter.format(now);
+  const lunar = formatLunar(now);
+  const weekNum = getWeekNumber(now);
+  const progress = getTodayProgress();
+  const progressBar = renderProgressBar(progress);
+  const weatherText = weatherElement ? weatherElement.textContent : '';
+  
+  // 更新紧凑模式
+  if (compactBadge) {
+    const badgeEmoji = badge.split(' ')[0]; // 提取 emoji
+    compactBadge.textContent = `${badgeEmoji} ${timeShort}`;
+  }
+  
+  if (compactProgress) {
+    compactProgress.textContent = `💡 ${progress}%`;
+  }
+  
+  if (compactWeather) {
+    compactWeather.textContent = extractWeatherTemp(weatherText);
+  }
+  
+  // 更新展开模式
+  if (expandedBadge) {
+    expandedBadge.textContent = badge;
+  }
+  
+  if (expandedTime) {
+    expandedTime.textContent = time;
+  }
+  
+  if (expandedDate) {
+    expandedDate.textContent = date;
+  }
+  
+  if (expandedLunar) {
+    expandedLunar.textContent = `${lunar} · 第${weekNum}周`;
+  }
+  
+  if (expandedProgressFull) {
+    expandedProgressFull.textContent = progressBar;
+  }
+  
+  if (expandedWeather) {
+    expandedWeather.textContent = weatherText;
+  }
+}
+
+
 function updateClock() {
   const now = new Date();
+  const hour = now.getHours();
+  
+  // 更新时间
   if (timeElement) {
     timeElement.textContent = timeFormatter.format(now);
   }
+  
+  // 更新日期
   if (dateElement) {
     dateElement.textContent = dateFormatter.format(now);
   }
-  updateGreetingDisplay(now.getHours());
+  
+  // 🆕 更新动态标签
+  if (dynamicBadgeElement) {
+    dynamicBadgeElement.textContent = getDynamicBadge(hour);
+  }
+  
+  // 🆕 更新农历和周数
+  if (lunarDateElement) {
+    const lunar = formatLunar(now);
+    const weekNum = getWeekNumber(now);
+    lunarDateElement.textContent = `${lunar} · 第${weekNum}周`;
+  }
+  
+  // 🆕 更新今日进度
+  if (todayProgressElement) {
+    const progress = getTodayProgress();
+    todayProgressElement.textContent = renderProgressBar(progress);
+  }
+  
+  // 更新问候语
+  updateGreetingDisplay(hour);
+
+  // 🆕 更新浮动卡片（关键！）
+  updateFloatingCard();
 }
+
 
 function getGreeting(hour) {
   if (hour < 5) return "夜深了，注意休息";
@@ -224,7 +456,7 @@ async function loadData() {
     const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
 
     applySiteSettings(data?.settings);
-    updateVisitorCount(data?.visitorCount);
+    updateRunningDays(data?.runningDays); // 🆕 修改这里
     applyRuntimeConfig(data?.config);
 
     originalData.apps = prepareCollection(data?.apps, "apps");
@@ -279,6 +511,10 @@ function prepareSiteSettings(settings) {
     const opacity = Math.max(0, Math.min(100, Math.round(settings.glassOpacity)));
     prepared.glassOpacity = opacity;
   }
+  // 🆕 添加 useWallpaper 处理
+  if (typeof settings.useWallpaper === "boolean") {
+    prepared.useWallpaper = settings.useWallpaper;
+  }
   // 🆕 添加壁纸 URL 处理
   if (typeof settings.wallpaperUrl === "string") {
     const trimmed = settings.wallpaperUrl.trim();
@@ -326,7 +562,29 @@ function applySiteSettings(settings) {
   setActiveWeather(prepared.weather, { source: "settings" });
   applyGlassOpacity(prepared.glassOpacity); // 🆕 应用透明度
   loadWallpaper(prepared.wallpaperUrl); // 🆕 在这里加载壁纸
+  // 🆕 根据开关决定是否加载壁纸
+  if (prepared.useWallpaper) {
+    loadWallpaper(prepared.wallpaperUrl);
+  } else {
+    removeWallpaper();
+  }
 }
+
+/**
+ * 移除壁纸背景
+ */
+function removeWallpaper() {
+  const container = document.getElementById('wallpaper-container');
+  if (!container) {
+    return;
+  }
+  
+  console.log('🚫 移除壁纸背景');
+  container.classList.remove('loaded');
+  container.style.backgroundImage = '';
+  container.style.opacity = '0';
+}
+
 
 function updateDocumentTitle(siteName) {
   const clean = typeof siteName === "string" ? siteName.trim() : "";
@@ -408,13 +666,14 @@ function updateFooter(rawContent) {
   refreshFooterVisibility();
 }
 
-function updateVisitorCount(rawValue) {
-  if (!footerElement || !footerMetaElement || !visitorCountElement) return;
-  const numericValue = Number(rawValue);
-  visitorCountValue =
-    Number.isFinite(numericValue) && numericValue >= 0 ? Math.floor(numericValue) : 0;
-  visitorCountKnown = true;
-  visitorCountElement.textContent = visitorCountFormatter.format(visitorCountValue);
+function updateRunningDays(runningDays) {
+  if (!footerElement || !footerMetaElement || !runningDaysElement) return;
+  
+  const days = typeof runningDays === "number" && Number.isFinite(runningDays) 
+    ? Math.max(0, Math.floor(runningDays)) 
+    : 0;
+  
+  runningDaysElement.textContent = days;
   footerMetaElement.hidden = false;
   refreshFooterVisibility();
 }
@@ -1018,6 +1277,7 @@ async function updateWeather(weather, retryCount = 0) {
         return `${locationLabel}${description}${temperatureText}`.trim();
       });
       startWeatherRotation(weatherInfo);
+      updateFloatingCard(); // 🆕 更新浮动卡片
     } else if (data && !Array.isArray(data)) {
       // Single city
       const descriptionRaw = typeof data?.text === "string" ? data.text.trim() : "";
@@ -1033,11 +1293,10 @@ async function updateWeather(weather, retryCount = 0) {
 
       const locationLabel = resolvedCity ? `${resolvedCity} · ` : "";
       weatherElement.textContent = `${locationLabel}${description}${temperatureText}`.trim();
-    } else {
-      // This case handles empty array or other falsy data values
-      throw new Error("未能获取有效天气数据");
-    }
+      updateFloatingCard(); // 🆕 更新浮动卡片
+    } 
   } catch (error) {
+    updateFloatingCard(); // 🆕 即使出错也更新
     console.error("天气数据获取失败", error);
     if (weatherRotationInterval) {
       clearInterval(weatherRotationInterval);
@@ -1068,6 +1327,8 @@ async function updateWeather(weather, retryCount = 0) {
 }
 
 let weatherRotationInterval = null;
+
+
 function startWeatherRotation(weatherInfo) {
   if (weatherRotationInterval) {
     clearInterval(weatherRotationInterval);
@@ -1079,11 +1340,13 @@ function startWeatherRotation(weatherInfo) {
 
   let index = 0;
   weatherElement.textContent = weatherInfo[index]; // Set initial text immediately
+  updateFloatingCard(); // 🆕 初始更新
 
   if (weatherInfo.length > 1) {
     index = 1;
     weatherRotationInterval = setInterval(() => {
       weatherElement.textContent = weatherInfo[index];
+      updateFloatingCard(); // 🆕 每次轮换时更新
       index = (index + 1) % weatherInfo.length;
     }, 5000);
   }
@@ -1162,13 +1425,14 @@ async function initialise() {
   updateFavicon(DEFAULT_SITE_SETTINGS.siteLogo, DEFAULT_SITE_SETTINGS.siteName);
   updateFooter(DEFAULT_SITE_SETTINGS.footer);
   applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity); // 🆕 应用默认透明度
+
+
   showCollection(activeCollection);
   if (searchEngineInput) {
     setSearchEngine(searchEngineInput.value || "google");
   }
   updateClock();
   setInterval(updateClock, 1_000);
-
   const dataPromise = loadData();
 
   loadYiyanQuote();
@@ -1245,6 +1509,40 @@ async function initialise() {
   await dataPromise.catch(() => {});
   if (weatherRequestToken === 0) {
     refreshWeatherDisplay();
+  }
+  // 🆕 浮动卡片功能
+  if (floatingCard) {
+    // 监听滚动事件（使用节流优化性能）
+    const throttledScroll = throttle(handleFloatingVisibility, 100);
+    window.addEventListener('scroll', throttledScroll, { passive: true });
+    
+    // 点击交互
+    floatingCard.addEventListener('click', (event) => {
+      // 移动端：首次点击展开，再次点击回顶部
+      if (window.innerWidth <= 768) {
+        if (!floatingCard.classList.contains('is-expanded')) {
+          event.preventDefault();
+          floatingCard.classList.add('is-expanded');
+          
+          // 3秒后自动收起
+          setTimeout(() => {
+            floatingCard.classList.remove('is-expanded');
+          }, 3000);
+        } else {
+          // 已展开状态，点击回顶部
+          scrollToTop();
+          floatingCard.classList.remove('is-expanded');
+        }
+      } else {
+        // 桌面端：直接回顶部
+        scrollToTop();
+      }
+    });
+    // 初始检查滚动位置
+    handleFloatingVisibility();
+    
+    // 初始更新内容
+    updateFloatingCard();
   }
 
 }

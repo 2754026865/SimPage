@@ -38,6 +38,7 @@ const siteWeatherCityInput = document.getElementById("site-weather-city");
 const siteWeatherSummary = document.getElementById("site-weather-summary");
 const siteGlassOpacityInput = document.getElementById("site-glass-opacity"); // 🆕 添加
 const opacityValueDisplay = document.getElementById("opacity-value-display"); // 🆕 添加
+const siteUseWallpaperInput = document.getElementById("site-use-wallpaper"); // 🆕 添加
 const siteWallpaperUrlInput = document.getElementById("site-wallpaper-url"); // 🆕 添加
 const categorySuggestions = document.getElementById("category-suggestions");
 const authOverlay = document.getElementById("auth-overlay");
@@ -54,6 +55,8 @@ const backToTopButton = document.getElementById("back-to-top");
 const faviconLink = document.getElementById("site-favicon");
 const backToAppsButton = document.getElementById("back-to-apps-button");
 const backToBookmarksButton = document.getElementById("back-to-bookmarks-button");
+const siteStartDateInput = document.getElementById("site-start-date"); // 🆕 添加
+
 
 const typeLabels = {
   apps: "应用",
@@ -99,6 +102,7 @@ const defaultSettings = {
   footer: siteFooterInput && siteFooterInput.value ? normaliseFooterValue(siteFooterInput.value) : "",
   weather: createDefaultWeatherSettings(),
   glassOpacity: 40, // 🆕 添加默认透明度
+  useWallpaper: true, // 🆕 添加默认值
   wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
 };
 
@@ -112,7 +116,11 @@ const state = {
     footer: defaultSettings.footer,
     weather: { ...defaultSettings.weather },
     glassOpacity: defaultSettings.glassOpacity, // 🆕 添加
+    useWallpaper: defaultSettings.useWallpaper, // 🆕 添加
     wallpaperUrl: defaultSettings.wallpaperUrl, // 🆕 添加
+  },
+  stats: { // 🆕 添加
+    siteStartDate: null,
   },
 };
 
@@ -187,6 +195,7 @@ function normaliseSettingsIncoming(input) {
     footer: defaultSettings.footer,
     weather: { ...defaultSettings.weather },
     glassOpacity: defaultSettings.glassOpacity, // 🆕 添加
+    useWallpaper: defaultSettings.useWallpaper, // 🆕 添加
     wallpaperUrl: defaultSettings.wallpaperUrl, // 🆕 添加
   };
 
@@ -199,6 +208,10 @@ function normaliseSettingsIncoming(input) {
   }
   if (typeof input.siteLogo === "string") {
     prepared.siteLogo = input.siteLogo.trim();
+  }
+  // 🆕 添加 useWallpaper 处理
+  if (typeof input.useWallpaper === "boolean") {
+    prepared.useWallpaper = input.useWallpaper;
   }
   if (typeof input.greeting === "string") {
     prepared.greeting = input.greeting.trim();
@@ -347,9 +360,15 @@ function applySettingsToInputs(settings) {
   if (opacityValueDisplay) {
     opacityValueDisplay.textContent = `${opacity}%`;
   }
+  // 🆕 应用 useWallpaper 状态
+  if (siteUseWallpaperInput) {
+    siteUseWallpaperInput.checked = settings.useWallpaper !== false;
+  }
   // 🆕 应用壁纸 URL 设置
   if (siteWallpaperUrlInput) {
     siteWallpaperUrlInput.value = settings.wallpaperUrl || "";
+    // 🆕 根据开关状态禁用/启用输入框
+    siteWallpaperUrlInput.disabled = !siteUseWallpaperInput?.checked;
   }
 
 
@@ -362,6 +381,10 @@ function applySettingsToInputs(settings) {
 
   updateWeatherSummary(normalisedWeather);
   updatePageIdentity(settings);
+  // 🆕 应用运行开始日期
+  if (siteStartDateInput) {
+    siteStartDateInput.value = settings.siteStartDate || "";
+  }
 }
 
 function handleSettingsChange(field, value) {
@@ -884,6 +907,7 @@ function buildSettingsPayload(settings) {
     footer: normaliseFooterValue(settings.footer),
     weather: buildWeatherPayload(settings.weather),
     glassOpacity: typeof settings.glassOpacity === "number" ? settings.glassOpacity : 40, // 🆕 添加
+    useWallpaper: typeof settings.useWallpaper === "boolean" ? settings.useWallpaper : true, // 🆕 添加
     wallpaperUrl: (settings.wallpaperUrl || "").trim(), // 🆕 添加
   };
 }
@@ -892,6 +916,9 @@ function updateStateFromResponse(data) {
   state.apps = normaliseIncoming(data?.apps, "apps");
   state.bookmarks = normaliseIncoming(data?.bookmarks, "bookmarks");
   state.settings = normaliseSettingsIncoming(data?.settings);
+  state.stats = { // 🆕 添加
+    siteStartDate: data?.siteStartDate || null,
+  };
   applySettingsToInputs(state.settings);
   render();
   resetDirty();
@@ -995,6 +1022,9 @@ async function saveChanges() {
       category: item.category || "",
     })),
     settings: payloadSettings,
+    stats: { // 🆕 添加
+      siteStartDate: state.stats.siteStartDate,
+    },
   };
 
   try {
@@ -1370,6 +1400,7 @@ function bindEvents() {
     });
   });
 
+  
   // 🆕 添加透明度滑块事件
   if (siteGlassOpacityInput) {
     siteGlassOpacityInput.addEventListener("input", () => {
@@ -1391,6 +1422,21 @@ function bindEvents() {
       setStatus("壁纸 URL 已更新，记得保存。", "neutral");
     });
   }
+  // 🆕 添加开关事件监听
+  if (siteUseWallpaperInput) {
+    siteUseWallpaperInput.addEventListener("change", () => {
+      const isEnabled = siteUseWallpaperInput.checked;
+      // 启用/禁用 URL 输入框
+      if (siteWallpaperUrlInput) {
+        siteWallpaperUrlInput.disabled = !isEnabled;
+      } 
+      // 更新状态
+      state.settings.useWallpaper = isEnabled;
+      markDirty();
+      setStatus(`壁纸已${isEnabled ? "启用" : "禁用"}，记得保存。`, "neutral");
+    });
+  }
+
 
   if (saveButton) {
     saveButton.addEventListener("click", saveChanges);
@@ -1493,6 +1539,15 @@ function bindEvents() {
   if (backToBookmarksButton) {
     backToBookmarksButton.addEventListener("click", () => {
       scrollToSection("bookmarks-editor-title");
+    });
+  }
+
+  // 🆕 运行开始日期输入事件
+  if (siteStartDateInput) {
+    siteStartDateInput.addEventListener("input", () => {
+      state.stats.siteStartDate = siteStartDateInput.value || null;
+      markDirty();
+      setStatus("网站运行开始日期已更新，记得保存。", "neutral");
     });
   }
 }

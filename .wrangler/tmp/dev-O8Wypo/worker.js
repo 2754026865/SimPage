@@ -28,7 +28,7 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
   mod
 ));
 
-// .wrangler/tmp/bundle-ElEz3C/checked-fetch.js
+// .wrangler/tmp/bundle-ZMAEJa/checked-fetch.js
 function checkURL(request, init) {
   const url = request instanceof URL ? request : new URL(
     (typeof request === "string" ? new Request(request, init) : request).url
@@ -46,7 +46,7 @@ function checkURL(request, init) {
 }
 var urls;
 var init_checked_fetch = __esm({
-  ".wrangler/tmp/bundle-ElEz3C/checked-fetch.js"() {
+  ".wrangler/tmp/bundle-ZMAEJa/checked-fetch.js"() {
     urls = /* @__PURE__ */ new Set();
     __name(checkURL, "checkURL");
     globalThis.fetch = new Proxy(globalThis.fetch, {
@@ -59,14 +59,14 @@ var init_checked_fetch = __esm({
   }
 });
 
-// .wrangler/tmp/bundle-ElEz3C/strip-cf-connecting-ip-header.js
+// .wrangler/tmp/bundle-ZMAEJa/strip-cf-connecting-ip-header.js
 function stripCfConnectingIPHeader(input, init) {
   const request = new Request(input, init);
   request.headers.delete("CF-Connecting-IP");
   return request;
 }
 var init_strip_cf_connecting_ip_header = __esm({
-  ".wrangler/tmp/bundle-ElEz3C/strip-cf-connecting-ip-header.js"() {
+  ".wrangler/tmp/bundle-ZMAEJa/strip-cf-connecting-ip-header.js"() {
     __name(stripCfConnectingIPHeader, "stripCfConnectingIPHeader");
     globalThis.fetch = new Proxy(globalThis.fetch, {
       apply(target, thisArg, argArray) {
@@ -486,12 +486,12 @@ var require_dist = __commonJS({
   }
 });
 
-// .wrangler/tmp/bundle-ElEz3C/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-ZMAEJa/middleware-loader.entry.ts
 init_checked_fetch();
 init_strip_cf_connecting_ip_header();
 init_modules_watch_stub();
 
-// .wrangler/tmp/bundle-ElEz3C/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-ZMAEJa/middleware-insertion-facade.js
 init_checked_fetch();
 init_strip_cf_connecting_ip_header();
 init_modules_watch_stub();
@@ -543,7 +543,9 @@ var BASE_DEFAULT_SETTINGS = Object.freeze({
   // 🆕 添加默认壁纸 URL
 });
 var DEFAULT_STATS = Object.freeze({
-  visitorCount: 0
+  visitorCount: 0,
+  siteStartDate: null
+  // 🆕 添加
 });
 var DEFAULT_WEATHER_CONFIG = Object.freeze({
   city: "\u5317\u4EAC"
@@ -717,11 +719,16 @@ async function handleDataUpdate(request, env) {
     const normalisedBookmarks = normaliseCollection(bookmarks, { label: "\u4E66\u7B7E", type: "bookmarks" });
     const normalisedSettings = normaliseSettingsInput(settings);
     const existing = await readFullData(env);
+    const normalisedStats = {
+      visitorCount: existing.stats?.visitorCount || 0,
+      siteStartDate: typeof stats?.siteStartDate === "string" ? stats.siteStartDate : null
+    };
     const payload = {
       settings: normalisedSettings,
       apps: normalisedApps,
       bookmarks: normalisedBookmarks,
-      stats: existing.stats,
+      stats: normalisedStats,
+      // 🆕 使用新的 stats
       admin: existing.admin
     };
     await writeFullData(env, payload);
@@ -764,6 +771,23 @@ async function handlePasswordUpdate(request, env) {
   return jsonResponse({ success: true, message: "\u5BC6\u7801\u5DF2\u66F4\u65B0\uFF0C\u4E0B\u6B21\u767B\u5F55\u8BF7\u4F7F\u7528\u65B0\u5BC6\u7801\u3002" });
 }
 __name(handlePasswordUpdate, "handlePasswordUpdate");
+function calculateRunningDays(startDate) {
+  if (!startDate)
+    return 0;
+  try {
+    const start = new Date(startDate);
+    const now = /* @__PURE__ */ new Date();
+    if (isNaN(start.getTime()))
+      return 0;
+    const diffTime = now - start;
+    const diffDays = Math.floor(diffTime / (1e3 * 60 * 60 * 24));
+    return Math.max(0, diffDays);
+  } catch (error) {
+    console.error("\u8BA1\u7B97\u8FD0\u884C\u5929\u6570\u5931\u8D25:", error);
+    return 0;
+  }
+}
+__name(calculateRunningDays, "calculateRunningDays");
 function handleFetchLogo(request, env) {
   try {
     const { searchParams } = new URL(request.url);
@@ -851,6 +875,8 @@ function sanitiseData(fullData) {
       wallpaperUrl = trimmed;
     }
   }
+  const siteStartDate = fullData.stats?.siteStartDate || null;
+  const runningDays = calculateRunningDays(siteStartDate);
   return {
     settings: {
       siteName: sourceSettings.siteName || defaults.siteName,
@@ -868,6 +894,10 @@ function sanitiseData(fullData) {
     apps: fullData.apps?.map((item) => ({ ...item })) || [],
     bookmarks: fullData.bookmarks?.map((item) => ({ ...item })) || [],
     visitorCount: fullData.stats?.visitorCount || DEFAULT_STATS.visitorCount,
+    runningDays,
+    // 🆕 添加
+    siteStartDate,
+    // 🆕 添加（用于后台编辑）
     config: {
       weather: {
         defaultCity: DEFAULT_WEATHER_CONFIG.city
@@ -1030,7 +1060,9 @@ async function createDefaultData() {
       { "id": "bookmark-juejin", "name": "\u7A00\u571F\u6398\u91D1", "url": "https://juejin.cn/", "description": "\u5F00\u53D1\u8005\u6280\u672F\u793E\u533A\u4E0E\u4F18\u8D28\u5185\u5BB9\u3002", "icon": "\u{1F4A1}", "category": "\u6280\u672F\u793E\u533A" }
     ],
     "stats": {
-      "visitorCount": 0
+      "visitorCount": 0,
+      "siteStartDate": null
+      // 🆕 添加
     },
     "admin": admin
   };
@@ -1322,7 +1354,7 @@ var jsonError = /* @__PURE__ */ __name(async (request, env, _ctx, middlewareCtx)
 }, "jsonError");
 var middleware_miniflare3_json_error_default = jsonError;
 
-// .wrangler/tmp/bundle-ElEz3C/middleware-insertion-facade.js
+// .wrangler/tmp/bundle-ZMAEJa/middleware-insertion-facade.js
 var __INTERNAL_WRANGLER_MIDDLEWARE__ = [
   middleware_ensure_req_body_drained_default,
   middleware_miniflare3_json_error_default
@@ -1357,7 +1389,7 @@ function __facade_invoke__(request, env, ctx, dispatch, finalMiddleware) {
 }
 __name(__facade_invoke__, "__facade_invoke__");
 
-// .wrangler/tmp/bundle-ElEz3C/middleware-loader.entry.ts
+// .wrangler/tmp/bundle-ZMAEJa/middleware-loader.entry.ts
 var __Facade_ScheduledController__ = class {
   constructor(scheduledTime, cron, noRetry) {
     this.scheduledTime = scheduledTime;

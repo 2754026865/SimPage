@@ -7,138 +7,170 @@
     <link rel="icon" id="site-favicon" href="/simpage-logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/scripts/main.js" defer></script>
+    <script type="module" src="/scripts/lunar.js"></script>
   </head>
   <body>
      <!-- 🆕 添加壁纸容器 -->
     <div class="wallpaper-container" id="wallpaper-container"></div>
+    <!-- 🆕 迷你浮动卡片（使用占位符，由 JS 动态更新） -->
+  <div class="floating-summary" id="floating-summary">
+    <!-- 紧凑模式（默认显示） -->
+    <div class="floating-compact">
+      <span class="compact-badge" id="compact-badge">--</span>
+      <span class="compact-divider">|</span>
+      <span class="compact-progress" id="compact-progress">--</span>
+      <span class="compact-divider">|</span>
+      <span class="compact-weather" id="compact-weather">--</span>
+    </div>
+    
+    <!-- 展开模式（悬停显示） -->
+    <div class="floating-expanded">
+      <div class="expanded-row">
+        <span class="expanded-badge" id="expanded-badge">--</span>
+        <span class="expanded-time" id="expanded-time">--:--:--</span>
+      </div>
+      <div class="expanded-date" id="expanded-date">--</div>
+      <div class="expanded-lunar" id="expanded-lunar">--</div>
+      <div class="expanded-progress" id="expanded-progress-full">--</div>
+      <div class="expanded-weather" id="expanded-weather">--</div>
+      <div class="expanded-hint">↑ 点击回到顶部</div>
+    </div>
+  </div>
+  
     <div class="ambient ambient-a" aria-hidden="true"></div>
     <div class="ambient ambient-b" aria-hidden="true"></div>
     <main class="layout">
       <section class="summary glass" aria-label="今日概览">
-        <button type="button" class="theme-toggle" id="theme-toggle" aria-label="切换主题">
-          <svg class="sun-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-            <path d="M12 2.25a.75.75 0 01.75.75v2.25a.75.75 0 01-1.5 0V3a.75.75 0 01.75-.75zM7.5 12a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM18.894 6.106a.75.75 0 00-1.06-1.06l-1.591 1.59a.75.75 0 101.06 1.061l1.591-1.59zM21.75 12a.75.75 0 01-.75.75h-2.25a.75.75 0 010-1.5H21a.75.75 0 01.75.75zM17.894 17.894a.75.75 0 001.06-1.06l-1.59-1.591a.75.75 0 10-1.061 1.06l1.59 1.591zM12 18a.75.75 0 01.75.75v2.25a.75.75 0 01-1.5 0v-2.25A.75.75 0 0112 18zM6.106 17.894a.75.75 0 00-1.06-1.06l-1.591 1.59a.75.75 0 001.06 1.061l1.591-1.59zM4.5 12a.75.75 0 01-.75.75H1.5a.75.75 0 010-1.5h2.25a.75.75 0 01.75.75zM6.106 6.106a.75.75 0 001.06-1.06l-1.59-1.591a.75.75 0 00-1.061 1.06l1.59 1.591z" />
-          </svg>
-          <svg class="moon-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-            <path fill-rule="evenodd" d="M9.528 1.718a.75.75 0 01.162.819A8.97 8.97 0 009 6a9 9 0 009 9 8.97 8.97 0 004.463-.945.75.75 0 01.981.981A10.503 10.503 0 0112 22.5a10.5 10.5 0 01-10.5-10.5c0-4.368 2.667-8.112 6.46-9.64a.75.75 0 01.818.162z" clip-rule="evenodd" />
-          </svg>
-        </button>
-        <div class="summary-main">
-          <h1 class="sr-only" id="site-name">SimPage</h1>
-          <span class="badge">今日概览</span>
-          <div class="time-display" id="current-time">--:--:--</div>
-          <div class="date-display" id="current-date">--</div>
-          <div class="greeting" id="greeting-text">欢迎回来</div>
+  <button type="button" class="theme-toggle" id="theme-toggle" aria-label="切换主题">
+    <svg class="sun-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+      <path d="M12 2.25a.75.75 0 01.75.75v2.25a.75.75 0 01-1.5 0V3a.75.75 0 01.75-.75zM7.5 12a4.5 4.5 0 119 0 4.5 4.5 0 01-9 0zM18.894 6.106a.75.75 0 00-1.06-1.06l-1.591 1.59a.75.75 0 101.06 1.061l1.591-1.59zM21.75 12a.75.75 0 01-.75.75h-2.25a.75.75 0 010-1.5H21a.75.75 0 01.75.75zM17.894 17.894a.75.75 0 001.06-1.06l-1.59-1.591a.75.75 0 10-1.061 1.06l1.59 1.591zM12 18a.75.75 0 01.75.75v2.25a.75.75 0 01-1.5 0v-2.25A.75.75 0 0112 18zM6.106 17.894a.75.75 0 00-1.06-1.06l-1.591 1.59a.75.75 0 001.06 1.061l1.591-1.59zM4.5 12a.75.75 0 01-.75.75H1.5a.75.75 0 010-1.5h2.25a.75.75 0 01.75.75zM6.106 6.106a.75.75 0 001.06-1.06l-1.59-1.591a.75.75 0 00-1.061 1.06l1.59 1.591z" />
+    </svg>
+    <svg class="moon-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+      <path fill-rule="evenodd" d="M9.528 1.718a.75.75 0 01.162.819A8.97 8.97 0 009 6a9 9 0 009 9 8.97 8.97 0 004.463-.945.75.75 0 01.981.981A10.503 10.503 0 0112 22.5a10.5 10.5 0 01-10.5-10.5c0-4.368 2.667-8.112 6.46-9.64a.75.75 0 01.818.162z" clip-rule="evenodd" />
+    </svg>
+  </button>
+  <div class="summary-main">
+    <h1 class="sr-only" id="site-name">SimPage</h1>
+    <!-- 🆕 动态标签 -->
+    <span class="badge" id="dynamic-badge">☀️ 早安</span>
+    <div class="time-display" id="current-time">--:--:--</div>
+    <div class="date-display" id="current-date">--</div>
+    <!-- 🆕 农历和周数显示 -->
+    <div class="lunar-display" id="lunar-date">--</div>
+    <div class="greeting" id="greeting-text">欢迎回来</div>
+    <!-- 🆕 今日进度条 -->
+    <div class="progress-display" id="today-progress">💡 今日已过 0% ░░░░░░░░░░</div>
+  </div>
+  <div class="summary-meta">
+    <div class="weather-block">
+      <span class="weather-label">天气</span>
+      <p class="weather-info" id="weather-info">正在获取天气...</p>
+    </div>
+    <form class="search-form" id="global-search-form">
+      <!-- 搜索表单内容保持不变 -->
+      <label for="global-search" class="sr-only">搜索</label>
+      <div class="search-controls">
+        <div class="search-select" data-control="target">
+          <label class="sr-only" for="search-target">搜索范围</label>
+          <select id="search-target" name="target">
+            <option value="web">搜索</option>
+            <option value="apps">应用</option>
+            <option value="bookmarks">书签</option>
+          </select>
         </div>
-        <div class="summary-meta">
-          <div class="weather-block">
-            <span class="weather-label">天气</span>
-            <p class="weather-info" id="weather-info">正在获取天气...</p>
+        <div class="search-select" data-control="engine">
+          <span class="sr-only" id="search-engine-label">搜索引擎</span>
+          <input type="hidden" id="search-engine" name="engine" value="bing" />
+          <div
+            class="search-engine-toggle"
+            role="group"
+            aria-labelledby="search-engine-label"
+          >
+            <button
+              type="button"
+              class="search-engine-button is-active"
+              data-engine-option="bing"
+              aria-pressed="true"
+              id="search-engine-bing"
+              tabindex="0"
+            >
+              <span class="engine-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path fill="#008373" d="M4 2l5 2v13.09L15.67 19 19 16.67l-4.34-2.1V6.07L4 2z"></path>
+                </svg>
+              </span>
+              <span class="sr-only">Bing</span>
+            </button>
+            <button
+              type="button"
+              class="search-engine-button"
+              data-engine-option="google"
+              aria-pressed="false"
+              id="search-engine-google"
+              tabindex="-1"
+            >
+              <span class="engine-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <path
+                    fill="#4285F4"
+                    d="M23.49 12.27c0-.78-.07-1.53-.2-2.27H12v4.3h6.48c-.28 1.5-1.13 2.77-2.4 3.62v3h3.87c2.26-2.08 3.54-5.14 3.54-8.65z"
+                  ></path>
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.96-1.07 7.95-2.9l-3.87-3c-1.07.72-2.45 1.16-4.08 1.16-3.14 0-5.8-2.12-6.75-4.98H1.26v3.13C3.24 21.19 7.3 24 12 24z"
+                  ></path>
+                  <path
+                    fill="#FBBC04"
+                    d="M5.25 14.27c-.24-.72-.38-1.5-.38-2.27s.14-1.56.38-2.27V6.6H1.26C.46 8.2 0 9.99 0 12c0 2.01.46 3.8 1.26 5.4l3.99-3.13z"
+                  ></path>
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.76 0 3.34.6 4.58 1.78l3.43-3.43C17.95 1.13 15.24 0 12 0 7.3 0 3.24 2.81 1.26 6.6l3.99 3.13C6.2 6.87 8.86 4.75 12 4.75z"
+                  ></path>
+                </svg>
+              </span>
+              <span class="sr-only">Google</span>
+            </button>
+            <button
+              type="button"
+              class="search-engine-button"
+              data-engine-option="baidu"
+              aria-pressed="false"
+              id="search-engine-baidu"
+              tabindex="-1"
+            >
+              <span class="engine-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" focusable="false">
+                  <circle cx="6.5" cy="7" r="3" fill="#3A7AFE"></circle>
+                  <circle cx="12" cy="5.5" r="3" fill="#3A7AFE"></circle>
+                  <circle cx="17.5" cy="7" r="3" fill="#3A7AFE"></circle>
+                  <path
+                    fill="#3A7AFE"
+                    d="M12 10.5c-3.6 0-6.1 2.32-6.1 4.93 0 2.2 1.75 3.67 4.32 3.67.92 0 1.7-.22 1.78-.24.08.02.86.24 1.78.24 2.57 0 4.32-1.47 4.32-3.67 0-2.61-2.5-4.93-6.1-4.93z"
+                  ></path>
+                  <circle cx="8.9" cy="18" r="1.2" fill="#FF4D4F"></circle>
+                  <circle cx="15.1" cy="18" r="1.2" fill="#FF4D4F"></circle>
+                </svg>
+              </span>
+              <span class="sr-only">百度</span>
+            </button>
           </div>
-          <form class="search-form" id="global-search-form">
-            <label for="global-search" class="sr-only">搜索</label>
-            <div class="search-controls">
-              <div class="search-select" data-control="target">
-                <label class="sr-only" for="search-target">搜索范围</label>
-                <select id="search-target" name="target">
-                  <option value="web">搜索</option>
-                  <option value="apps">应用</option>
-                  <option value="bookmarks">书签</option>
-                </select>
-              </div>
-              <div class="search-select" data-control="engine">
-                <span class="sr-only" id="search-engine-label">搜索引擎</span>
-                <input type="hidden" id="search-engine" name="engine" value="bing" />
-                <div
-                  class="search-engine-toggle"
-                  role="group"
-                  aria-labelledby="search-engine-label"
-                >
-                  <button
-                    type="button"
-                    class="search-engine-button is-active"
-                    data-engine-option="bing"
-                    aria-pressed="true"
-                    id="search-engine-bing"
-                    tabindex="0"
-                  >
-                    <span class="engine-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false">
-                        <path fill="#008373" d="M4 2l5 2v13.09L15.67 19 19 16.67l-4.34-2.1V6.07L4 2z"></path>
-                      </svg>
-                    </span>
-                    <span class="sr-only">Bing</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="search-engine-button"
-                    data-engine-option="google"
-                    aria-pressed="false"
-                    id="search-engine-google"
-                    tabindex="-1"
-                  >
-                    <span class="engine-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false">
-                        <path
-                          fill="#4285F4"
-                          d="M23.49 12.27c0-.78-.07-1.53-.2-2.27H12v4.3h6.48c-.28 1.5-1.13 2.77-2.4 3.62v3h3.87c2.26-2.08 3.54-5.14 3.54-8.65z"
-                        ></path>
-                        <path
-                          fill="#34A853"
-                          d="M12 24c3.24 0 5.96-1.07 7.95-2.9l-3.87-3c-1.07.72-2.45 1.16-4.08 1.16-3.14 0-5.8-2.12-6.75-4.98H1.26v3.13C3.24 21.19 7.3 24 12 24z"
-                        ></path>
-                        <path
-                          fill="#FBBC04"
-                          d="M5.25 14.27c-.24-.72-.38-1.5-.38-2.27s.14-1.56.38-2.27V6.6H1.26C.46 8.2 0 9.99 0 12c0 2.01.46 3.8 1.26 5.4l3.99-3.13z"
-                        ></path>
-                        <path
-                          fill="#EA4335"
-                          d="M12 4.75c1.76 0 3.34.6 4.58 1.78l3.43-3.43C17.95 1.13 15.24 0 12 0 7.3 0 3.24 2.81 1.26 6.6l3.99 3.13C6.2 6.87 8.86 4.75 12 4.75z"
-                        ></path>
-                      </svg>
-                    </span>
-                    <span class="sr-only">Google</span>
-                  </button>
-                  <button
-                    type="button"
-                    class="search-engine-button"
-                    data-engine-option="baidu"
-                    aria-pressed="false"
-                    id="search-engine-baidu"
-                    tabindex="-1"
-                  >
-                    <span class="engine-icon" aria-hidden="true">
-                      <svg viewBox="0 0 24 24" focusable="false">
-                        <circle cx="6.5" cy="7" r="3" fill="#3A7AFE"></circle>
-                        <circle cx="12" cy="5.5" r="3" fill="#3A7AFE"></circle>
-                        <circle cx="17.5" cy="7" r="3" fill="#3A7AFE"></circle>
-                        <path
-                          fill="#3A7AFE"
-                          d="M12 10.5c-3.6 0-6.1 2.32-6.1 4.93 0 2.2 1.75 3.67 4.32 3.67.92 0 1.7-.22 1.78-.24.08.02.86.24 1.78.24 2.57 0 4.32-1.47 4.32-3.67 0-2.61-2.5-4.93-6.1-4.93z"
-                        ></path>
-                        <circle cx="8.9" cy="18" r="1.2" fill="#FF4D4F"></circle>
-                        <circle cx="15.1" cy="18" r="1.2" fill="#FF4D4F"></circle>
-                      </svg>
-                    </span>
-                    <span class="sr-only">百度</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div class="search-input">
-              <input
-                type="search"
-                id="global-search"
-                name="query"
-                placeholder="搜索网页、应用或书签..."
-                autocomplete="off"
-              />
-              <button type="submit">搜索</button>
-            </div>
-            <p class="search-feedback" id="local-search-feedback" hidden></p>
-          </form>
         </div>
-      </section>
+      </div>
+      <div class="search-input">
+        <input
+          type="search"
+          id="global-search"
+          name="query"
+          placeholder="搜索网页、应用或书签..."
+          autocomplete="off"
+        />
+        <button type="submit">搜索</button>
+      </div>
+      <p class="search-feedback" id="local-search-feedback" hidden></p>
+    </form>
+  </div>
+</section>
 
       <section class="grid-section glass" aria-labelledby="collections-title">
         <div class="section-header section-header-with-toggle">
@@ -210,8 +242,9 @@
       <div class="site-footer-inner">
         <div class="site-footer-content" id="site-footer-content"></div>
         <div class="site-footer-meta" id="site-footer-meta" hidden>
-          <span class="site-footer-meta-label">访客量</span>
-          <span class="site-footer-meta-value" id="site-visitor-count">0</span>
+          <span class="site-footer-meta-label">已平稳运行</span>
+          <span class="site-footer-meta-value" id="site-running-days">0</span>
+          <span class="site-footer-meta-unit">天</span>
         </div>
       </div>
     </footer>
