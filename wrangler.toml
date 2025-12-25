@@ -9,8 +9,8 @@ compatibility_date = "2024-03-26"
 # 3. __STATIC_CONTENT: Stores all static assets (HTML, CSS, JS, images).
 #    This name is required by the @cloudflare/kv-asset-handler library.
 kv_namespaces = [
-  { binding = "SIMPAGE_DATA", id = "871b40c8323b4a5f815691f53dd98c4c", preview_id = "871b40c8323b4a5f815691f53dd98c4c" },
-  { binding = "SESSIONS", id = "dddcd16dd2e24270898488ee87280910", preview_id = "dddcd16dd2e24270898488ee87280910" },
+  { binding = "SIMPAGE_DATA", id = "b372dfdad69d4753af3cf891c184c68c", preview_id = "b372dfdad69d4753af3cf891c184c68c" },
+  { binding = "SESSIONS", id = "4d66f25e98f0467b99de14a28a2a9e5d", preview_id = "4d66f25e98f0467b99de14a28a2a9e5d" },
 ]
 
 # Site configuration for static assets
