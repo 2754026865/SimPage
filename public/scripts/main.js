@@ -1,7 +1,8 @@
 import { renderMarkdown } from "./markdown.js";
 import { formatLunar } from "./lunar.js"; // 🆕 导入农历工具
 import "./theme-toggle.js";
-
+// 🆕 天气切换间隔
+const WEATHER_ROTATION_INTERVAL = 3000;
 const siteNameElement = document.getElementById("site-name");
 const timeElement = document.getElementById("current-time");
 const dateElement = document.getElementById("current-date");
@@ -1115,6 +1116,22 @@ async function loadYiyanQuote() {
 }
 
 function normaliseWeatherSetting(raw) {
+  // 🆕 处理对象格式 { city: ["北京", "上海"] }
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    if (Array.isArray(raw.city)) {
+      // 将 { city: ["北京", "上海"] } 转换为 [{ city: "北京" }, { city: "上海" }]
+      return raw.city
+        .map(cityName => {
+          const trimmed = String(cityName).trim();
+          return trimmed ? { city: trimmed } : null;
+        })
+        .filter(item => item !== null);
+    } else if (typeof raw.city === "string") {
+      const trimmed = raw.city.trim();
+      return trimmed ? [{ city: trimmed }] : null;
+    }
+  }
+  // 处理数组或单个值
   if (Array.isArray(raw)) {
     return raw.map(item => {
       if (typeof item === "string") {
@@ -1139,6 +1156,7 @@ function normaliseWeatherSetting(raw) {
       return null;
     }).filter(item => item !== null);
   }
+
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     return trimmed ? { city: trimmed } : null;
@@ -1196,12 +1214,17 @@ function updateActiveWeather(weather) {
   if (!weather) {
     return;
   }
-  if (weathersAreEqual(activeWeather, weather)) {
-    return;
+  
+  // 🆕 支持数组格式
+  if (Array.isArray(weather)) {
+    activeWeather = weather;
+  } else {
+    activeWeather = { city: weather.city };
   }
-  activeWeather = { city: weather.city };
+  
   refreshWeatherDisplay();
 }
+
 
 function setActiveWeather(rawWeather, { source = "settings" } = {}) {
   let weather = normaliseWeatherSetting(rawWeather);
@@ -1214,37 +1237,116 @@ function setActiveWeather(rawWeather, { source = "settings" } = {}) {
   }
   if (source === "settings") {
     weatherSource = "settings";
-    if (Array.isArray(weather)) {
-      // Use the first city in the array
-      weather = weather[0];
-    }
+    // 🔧 直接传递数组，不要转换为单个对象
     updateActiveWeather(weather);
     return;
   }
   if (weatherSource !== "settings") {
     weatherSource = "default";
-    if (Array.isArray(weather)) {
-      // Use the first city in the array
-      weather = weather[0];
-    }
+    // 🔧 直接传递数组，不要转换为单个对象
     updateActiveWeather(weather);
   }
 }
 
+
 function refreshWeatherDisplay() {
   if (!weatherElement) return;
-  const weather = activeWeather && activeWeather.city ? activeWeather : getDefaultWeather();
+  
+  // 🆕 处理数组格式
+  const weather = Array.isArray(activeWeather) && activeWeather.length > 0
+    ? activeWeather
+    : (activeWeather && activeWeather.city ? activeWeather : getDefaultWeather());
+  
   updateWeather(weather);
 }
 
+
+/**
+ * 🆕 根据天气状况返回对应的emoji图标
+ */
+function getWeatherEmoji(condition) {
+  const emojiMap = {
+    '晴': '☀️',
+    '多云': '⛅',
+    '阴': '☁️',
+    '小雨': '🌦️',
+    '中雨': '🌧️',
+    '大雨': '⛈️',
+    '暴雨': '⛈️',
+    '雷阵雨': '⛈️',
+    '雨夹雪': '🌨️',
+    '小雪': '🌨️',
+    '中雪': '❄️',
+    '大雪': '❄️',
+    '暴雪': '❄️',
+    '雾': '🌫️',
+    '霾': '😷',
+    '沙尘': '🌪️',
+    '风': '💨'
+  };
+  
+  // 模糊匹配
+  for (const [key, emoji] of Object.entries(emojiMap)) {
+    if (condition.includes(key)) {
+      return emoji;
+    }
+  }
+  
+  return '🌤️'; // 默认图标
+}
+
+
 async function updateWeather(weather, retryCount = 0) {
   const requestToken = ++weatherRequestToken;
+  
+  // 🆕 检查是否传入了多个城市（支持数组格式）
+  if (Array.isArray(weather) && weather.length > 1) {
+    console.log('🌍 检测到多个城市，开始获取天气...');
+    
+    const weatherPromises = weather.map(async (w) => {
+      const city = w.city || '';
+      if (!city) return null;
+      
+      try {
+        const apiUrl = `https://60s.viki.moe/v2/weather?query=${encodeURIComponent(city)}`;
+        const response = await fetch(apiUrl);
+        const payload = await response.json();
+        
+        if (payload.code === 200 && payload.data) {
+          const data = payload.data;
+          const condition = data.weather.condition || "天气良好";
+          const temperature = Math.round(data.weather.temperature);
+          const emoji = getWeatherEmoji(condition);
+          
+          return `${emoji} ${data.location.city} · ${condition} ${temperature}°C`;
+        }
+      } catch (error) {
+        console.error(`获取 ${city} 天气失败:`, error);
+      }
+      
+      return null;
+    });
+    
+    const results = await Promise.all(weatherPromises);
+    const validResults = results.filter(r => r !== null);
+    
+    if (validResults.length > 0) {
+      console.log(`✅ 成功获取 ${validResults.length} 个城市的天气`);
+      startWeatherRotation(validResults);
+      return;
+    } else {
+      console.warn('⚠️ 所有城市天气获取失败，使用默认城市');
+    }
+  }
+  
+  // 单城市处理逻辑（保持不变）
   const city = typeof weather?.city === "string" ? weather.city.trim() : "";
   const maxRetries = 2;
   const retryDelay = 1000;
 
   try {
-    const response = await fetch("/api/weather");
+    const apiUrl = `https://60s.viki.moe/v2/weather${city ? `?query=${encodeURIComponent(city)}` : ''}`;
+    const response = await fetch(apiUrl);
 
     let payload;
     try {
@@ -1253,65 +1355,46 @@ async function updateWeather(weather, retryCount = 0) {
       throw new Error("天气服务响应异常");
     }
 
-    if (!response.ok || (payload && payload.success === false)) {
-      const message =
-        typeof payload?.message === "string" && payload.message.trim()
-          ? payload.message.trim()
-          : "天气数据请求失败";
+    if (!response.ok || payload.code !== 200) {
+      const message = payload?.message || "天气数据请求失败";
       throw new Error(message);
     }
-
-    const data =
-      payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
 
     if (requestToken !== weatherRequestToken) {
       return;
     }
 
-    if (Array.isArray(data) && data.length > 0) {
-      // Multiple cities
-      const weatherInfo = data.map(item => {
-        const descriptionRaw = typeof item?.text === "string" ? item.text.trim() : "";
-        const description = descriptionRaw || "天气良好";
-        const temperatureValue = Number(item?.temperature);
-        const temperatureText = Number.isFinite(temperatureValue)
-          ? ` ${Math.round(temperatureValue)}°C`
-          : "";
-        const resolvedCity =
-          typeof item?.city === "string" && item.city.trim()
-            ? item.city.trim()
-            : city || getDefaultWeather().city;
+    const data = payload.data;
+    if (!data || !data.weather) {
+      throw new Error("天气数据格式异常");
+    }
 
-        const locationLabel = resolvedCity ? `${resolvedCity} · ` : "";
-        return `${locationLabel}${description}${temperatureText}`.trim();
-      });
-      startWeatherRotation(weatherInfo);
-      updateFloatingCard(); // 🆕 更新浮动卡片
-    } else if (data && !Array.isArray(data)) {
-      // Single city
-      const descriptionRaw = typeof data?.text === "string" ? data.text.trim() : "";
-      const description = descriptionRaw || "天气良好";
-      const temperatureValue = Number(data?.temperature);
-      const temperatureText = Number.isFinite(temperatureValue)
-        ? ` ${Math.round(temperatureValue)}°C`
-        : "";
-      const resolvedCity =
-        typeof data?.city === "string" && data.city.trim()
-          ? data.city.trim()
-          : city || getDefaultWeather().city;
+    const weatherData = data.weather;
+    const locationData = data.location;
 
-      const locationLabel = resolvedCity ? `${resolvedCity} · ` : "";
-      weatherElement.textContent = `${locationLabel}${description}${temperatureText}`.trim();
-      updateFloatingCard(); // 🆕 更新浮动卡片
-    } 
+    const condition = weatherData.condition || "天气良好";
+    const temperature = Number(weatherData.temperature);
+    const temperatureText = Number.isFinite(temperature) ? `${Math.round(temperature)}°C` : "";
+    const resolvedCity = locationData?.city || city || getDefaultWeather().city;
+
+    const weatherEmoji = getWeatherEmoji(condition);
+    
+    const locationLabel = resolvedCity ? `${resolvedCity} · ` : "";
+    weatherElement.textContent = `${weatherEmoji} ${locationLabel}${condition}${temperatureText}`.trim();
+    
+    updateFloatingCard();
+    
   } catch (error) {
-    updateFloatingCard(); // 🆕 即使出错也更新
+    updateFloatingCard();
     console.error("天气数据获取失败", error);
+    
     if (weatherRotationInterval) {
       clearInterval(weatherRotationInterval);
       weatherRotationInterval = null;
     }
+    
     weatherElement.textContent = "天气信息获取失败";
+    
     if (requestToken !== weatherRequestToken) {
       return;
     }
@@ -1329,11 +1412,12 @@ async function updateWeather(weather, retryCount = 0) {
     const fallbackCity = city || getDefaultWeather().city;
     const locationLabel = fallbackCity ? `${fallbackCity} · ` : "";
     const rawMessage = error && typeof error.message === "string" ? error.message.trim() : "";
-    const message =
-      rawMessage && /[\u4e00-\u9fff]/.test(rawMessage) ? rawMessage : "天气信息暂不可用";
+    const message = rawMessage && /[\u4e00-\u9fff]/.test(rawMessage) ? rawMessage : "天气信息暂不可用";
     weatherElement.textContent = `${locationLabel}${message}`.trim();
   }
 }
+
+
 
 let weatherRotationInterval = null;
 
@@ -1348,18 +1432,20 @@ function startWeatherRotation(weatherInfo) {
   }
 
   let index = 0;
-  weatherElement.textContent = weatherInfo[index]; // Set initial text immediately
-  updateFloatingCard(); // 🆕 初始更新
+  weatherElement.textContent = weatherInfo[index];
+  updateFloatingCard();
 
   if (weatherInfo.length > 1) {
     index = 1;
     weatherRotationInterval = setInterval(() => {
       weatherElement.textContent = weatherInfo[index];
-      updateFloatingCard(); // 🆕 每次轮换时更新
+      updateFloatingCard();
       index = (index + 1) % weatherInfo.length;
-    }, 5000);
+    }, WEATHER_ROTATION_INTERVAL);  // 👈 使用常量
   }
 }
+
+
 
 
 function scrollToTop() {
