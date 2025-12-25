@@ -94,6 +94,32 @@
           </div>
 
           <div class="field field-span-2">
+            <span>容器透明度</span>
+            <div class="opacity-control">
+              <input type="range" id="site-glass-opacity" min="0" max="100" step="5" value="40" class="opacity-slider" />
+              <span class="opacity-value" id="opacity-value-display">40%</span>
+
+            </div>
+            <p class="field-description">
+              调整前台界面容器的透明度，数值越小越透明（建议范围：30%-60%）
+            </p>
+          </div>
+
+          <!-- 🆕 添加壁纸 URL 输入框 -->
+          <div class="field field-span-2">
+            <span>壁纸背景 URL</span>
+            <input
+              type="url"
+              id="site-wallpaper-url"
+              autocomplete="off"
+              placeholder="https://bing.img.run/uhd.php（默认为 Bing 每日壁纸）"
+            />
+            <p class="field-description">自定义壁纸背景图片 URL，留空则使用默认的 Bing 每日壁纸。支持任何可访问的图片链接。</p>
+            
+
+          </div>
+
+          <div class="field field-span-2">
             <span>页脚内容（支持 Markdown）</span>
             <textarea
               id="site-footer-content"

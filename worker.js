@@ -14,6 +14,8 @@ const BASE_DEFAULT_SETTINGS = Object.freeze({
   siteLogo: "",
   greeting: "",
   footer: "",
+  glassOpacity: 40, // 🆕 添加默认透明度
+  wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加默认壁纸 URL
 });
 
 const DEFAULT_STATS = Object.freeze({
@@ -474,6 +476,20 @@ function sanitiseData(fullData) {
   const sourceSettings = fullData.settings || defaults;
   const weather = normaliseWeatherSettingsValue(sourceSettings.weather);
 
+  // 🆕 处理透明度
+  let glassOpacity = 40;
+  if (typeof sourceSettings.glassOpacity === "number") {
+    glassOpacity = Math.max(0, Math.min(100, Math.round(sourceSettings.glassOpacity)));
+  }
+  // 🆕 处理壁纸 URL
+  let wallpaperUrl = "https://bing.img.run/uhd.php";
+  if (typeof sourceSettings.wallpaperUrl === "string") {
+    const trimmed = sourceSettings.wallpaperUrl.trim();
+    if (trimmed) {
+      wallpaperUrl = trimmed;
+    }
+  }
+
   return {
     settings: {
       siteName: sourceSettings.siteName || defaults.siteName,
@@ -481,6 +497,8 @@ function sanitiseData(fullData) {
       greeting: sourceSettings.greeting || defaults.greeting,
       footer: normaliseFooterValue(sourceSettings.footer),
       weather: { city: weather.city },
+      glassOpacity, // 🆕 添加
+      wallpaperUrl, // 🆕 添加
     },
     apps: fullData.apps?.map((item) => ({ ...item })) || [],
     bookmarks: fullData.bookmarks?.map((item) => ({ ...item })) || [],
@@ -497,12 +515,28 @@ function normaliseSettingsInput(input) {
   const siteName = typeof input?.siteName === "string" ? input.siteName.trim() : "";
   if (!siteName) throw new Error("ç½ç«åç§°ä¸è½ä¸ºç©ºã");
 
+  // 🆕 处理透明度
+  let glassOpacity = 40;
+  if (typeof input?.glassOpacity === "number") {
+    glassOpacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
+  }
+  // 🆕 处理壁纸 URL
+  let wallpaperUrl = "https://bing.img.run/uhd.php";
+  if (typeof input?.wallpaperUrl === "string") {
+    const trimmed = input.wallpaperUrl.trim();
+    if (trimmed) {
+      wallpaperUrl = trimmed;
+    }
+  }
+
   return {
     siteName,
     siteLogo: typeof input?.siteLogo === "string" ? input.siteLogo.trim() : "",
     greeting: typeof input?.greeting === "string" ? input.greeting.trim() : "",
     footer: normaliseFooterValue(input?.footer),
     weather: normaliseWeatherSettingsInput(input?.weather),
+    glassOpacity, // 🆕 添加
+    wallpaperUrl, // 🆕 添加
   };
 }
 
@@ -667,7 +701,7 @@ function normaliseWeatherSettingsInput(rawWeather) {
     const apiKey = getWeatherApiKey(rawWeather);
     const query = normaliseWeatherQueryInput(rawWeather);
 
-  if (cities.length === 0) {
+    if (cities.length === 0) {
         throw new Error("å¤©æ°åå¸ä¸è½ä¸ºç©ºã");
     }
   return { city: cities, apiKey, query };
@@ -726,6 +760,8 @@ async function createDefaultData() {
       "siteLogo": "",
       "greeting": "",
       "footer": "æ¬¢è¿æ¥å°æçä¸»é¡µ",
+      "glassOpacity": 40, // 🆕 添加
+      "wallpaperUrl": "https://bing.img.run/uhd.php", // 🆕 添加
       "weather": {
         "city": ["åäº¬", "ä¸æµ·"]
       }
@@ -1118,7 +1154,7 @@ function getWeatherDescription(code) {
     81: "ä¸­éµé¨", 82: "å¤§éµé¨", 85: "å°éµéª", 86: "å¤§éµéª", 95: "é·é¨",
     96: "é·é¨ä¼´å°é¹", 99: "é·é¨ä¼´å¤§å°é¹",
   };
-  return map[code] || "æªç¥";
+  return map[code] || "未知";
 }
 
 // =================================================================================

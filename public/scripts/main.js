@@ -62,6 +62,8 @@ const DEFAULT_SITE_SETTINGS = {
   greeting: "",
   footer: "",
   weather: { ...defaultWeather },
+  glassOpacity: 40, // 🆕 添加默认透明度
+  wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
 };
 
 const defaultFaviconHref = faviconLink?.getAttribute("href") || "data:,";
@@ -272,6 +274,19 @@ function prepareSiteSettings(settings) {
   if (typeof settings.footer === "string") {
     prepared.footer = normaliseFooterValue(settings.footer);
   }
+  // 🆕 添加透明度处理
+  if (typeof settings.glassOpacity === "number") {
+    const opacity = Math.max(0, Math.min(100, Math.round(settings.glassOpacity)));
+    prepared.glassOpacity = opacity;
+  }
+  // 🆕 添加壁纸 URL 处理
+  if (typeof settings.wallpaperUrl === "string") {
+    const trimmed = settings.wallpaperUrl.trim();
+    if (trimmed) {
+      prepared.wallpaperUrl = trimmed;
+    }
+  }
+
 
   const weather = normaliseWeatherSetting(settings.weather);
   if (weather) {
@@ -286,6 +301,17 @@ function prepareSiteSettings(settings) {
   return prepared;
 }
 
+/**
+ * 应用容器透明度
+ */
+function applyGlassOpacity(opacity) {
+  const value = typeof opacity === "number" ? opacity : 40;
+  const normalised = Math.max(0, Math.min(100, value));
+  const opacityValue = normalised / 100;
+  document.documentElement.style.setProperty('--glass-opacity', opacityValue);
+}
+
+
 function applySiteSettings(settings) {
   const prepared = prepareSiteSettings(settings);
   customGreeting = prepared.greeting;
@@ -298,6 +324,8 @@ function applySiteSettings(settings) {
   updateGreetingDisplay();
   updateFooter(prepared.footer);
   setActiveWeather(prepared.weather, { source: "settings" });
+  applyGlassOpacity(prepared.glassOpacity); // 🆕 应用透明度
+  loadWallpaper(prepared.wallpaperUrl); // 🆕 在这里加载壁纸
 }
 
 function updateDocumentTitle(siteName) {
@@ -1005,13 +1033,13 @@ async function updateWeather(weather, retryCount = 0) {
       throw new Error("天气服务响应异常");
     }
 
-      if (!response.ok || (payload && payload.success === false)) {
-        const message =
-          typeof payload?.message === "string" && payload.message.trim()
-            ? payload.message.trim()
-            : "天气数据请求失败";
+    if (!response.ok || (payload && payload.success === false)) {
+      const message =
+        typeof payload?.message === "string" && payload.message.trim()
+          ? payload.message.trim()
+          : "天气数据请求失败";
         throw new Error(formatWeatherErrorMessage(message));
-      }
+    }
 
     const data =
       payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
@@ -1082,9 +1110,9 @@ async function updateWeather(weather, retryCount = 0) {
     const locationLabel = fallbackCity ? `${fallbackCity} · ` : "";
     const rawMessage = error && typeof error.message === "string" ? error.message.trim() : "";
       const message = formatWeatherErrorMessage(rawMessage);
-      weatherElement.textContent = `${locationLabel}${message}`.trim();
-    }
+    weatherElement.textContent = `${locationLabel}${message}`.trim();
   }
+}
 
 let weatherRotationInterval = null;
 function startWeatherRotation(weatherInfo) {
@@ -1129,10 +1157,58 @@ function handleBackToTopVisibility() {
   }
 }
 
+/**
+ * 加载壁纸
+ * @param {string} wallpaperUrl - 壁纸图片 URL
+ */
+async function loadWallpaper(wallpaperUrl) {
+  const container = document.getElementById('wallpaper-container');
+  if (!container) {
+    console.warn('⚠️ 壁纸容器不存在');
+    return;
+  }
+  
+  // 使用传入的 URL，如果为空则使用默认值
+  const url = (wallpaperUrl && wallpaperUrl.trim()) || 'https://bing.img.run/uhd.php';
+  
+  console.log('🖼️ 开始加载壁纸:', url);
+  
+  try {
+    const img = new Image();
+    
+    img.onload = () => {
+      container.style.backgroundImage = `url('${url}')`;
+      container.classList.add('loaded');
+      console.log('✅ 壁纸加载成功:', url);
+    };
+    
+    img.onerror = () => {
+      console.warn('⚠️ 壁纸加载失败:', url);
+      // 如果加载失败且不是默认壁纸，尝试使用默认 Bing 壁纸
+      if (url !== 'https://bing.img.run/uhd.php') {
+        console.log('🔄 尝试加载默认壁纸...');
+        loadWallpaper('https://bing.img.run/uhd.php');
+      } else {
+        // 默认壁纸也加载失败，保持原有渐变背景
+        console.error('❌ 默认壁纸也加载失败，保持原有背景');
+      }
+    };
+    
+    // 开始加载图片
+    img.src = url;
+    
+  } catch (error) {
+    console.error('❌ 壁纸加载出错:', error);
+  }
+}
+
+
+
 async function initialise() {
   updateDocumentTitle(DEFAULT_SITE_SETTINGS.siteName);
   updateFavicon(DEFAULT_SITE_SETTINGS.siteLogo, DEFAULT_SITE_SETTINGS.siteName);
   updateFooter(DEFAULT_SITE_SETTINGS.footer);
+  applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity); // 🆕 应用默认透明度
   showCollection(activeCollection);
   if (searchEngineInput) {
     setSearchEngine(searchEngineInput.value || "google");
