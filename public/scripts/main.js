@@ -969,54 +969,6 @@ function refreshWeatherDisplay() {
   updateWeather(weather);
 }
 
-function formatWeatherErrorMessage(rawMessage) {
-  const message = typeof rawMessage === "string" ? rawMessage.trim() : "";
-  if (!message) {
-    return "Weather information is unavailable.";
-  }
-  const mapQWeatherCode = (code) => {
-    switch (code) {
-      case "401":
-      case "403":
-        return "Invalid API Key or API Host.";
-      case "402":
-        return "API quota exhausted. Try again later.";
-      case "429":
-        return "Too many requests. Please wait and retry.";
-      case "204":
-        return "City not found. Check the name in admin.";
-      default:
-        return null;
-    }
-  };
-  if (message.includes("Missing QWeather API Key")) {
-    return "Weather API key is missing. Configure it in admin.";
-  }
-  if (message.includes("City name is required") || message.includes("Failed to resolve city location")) {
-    return "City not found. Check the name in admin.";
-  }
-  const geocodeMatch = message.match(/QWeather geocode error: ([^\\.]+)/);
-  if (geocodeMatch) {
-    const hint = mapQWeatherCode(geocodeMatch[1]);
-    if (geocodeMatch[1] === "invalid_response") {
-      return "City lookup failed. API Host may be unreachable.";
-    }
-    return hint || `City lookup failed (code ${geocodeMatch[1]}). Check API Host/Key or city spelling.`;
-  }
-  const nowMatch = message.match(/QWeather now error: ([^\\.]+)/);
-  if (nowMatch) {
-    const hint = mapQWeatherCode(nowMatch[1]);
-    if (nowMatch[1] === "invalid_response") {
-      return "Weather service unavailable. API Host may be unreachable.";
-    }
-    return hint || `Weather service error (code ${nowMatch[1]}). Check API Host/Key or plan.`;
-  }
-  if (message.includes("Weather request timed out") || message.includes("Weather request failed")) {
-    return "Weather service is temporarily unavailable.";
-  }
-  return message;
-}
-
 async function updateWeather(weather, retryCount = 0) {
   const requestToken = ++weatherRequestToken;
   const city = typeof weather?.city === "string" ? weather.city.trim() : "";
@@ -1038,7 +990,7 @@ async function updateWeather(weather, retryCount = 0) {
         typeof payload?.message === "string" && payload.message.trim()
           ? payload.message.trim()
           : "天气数据请求失败";
-        throw new Error(formatWeatherErrorMessage(message));
+      throw new Error(message);
     }
 
     const data =
@@ -1109,7 +1061,8 @@ async function updateWeather(weather, retryCount = 0) {
     const fallbackCity = city || getDefaultWeather().city;
     const locationLabel = fallbackCity ? `${fallbackCity} · ` : "";
     const rawMessage = error && typeof error.message === "string" ? error.message.trim() : "";
-      const message = formatWeatherErrorMessage(rawMessage);
+    const message =
+      rawMessage && /[\u4e00-\u9fff]/.test(rawMessage) ? rawMessage : "天气信息暂不可用";
     weatherElement.textContent = `${locationLabel}${message}`.trim();
   }
 }
