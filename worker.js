@@ -182,14 +182,12 @@ async function handleLogin(request, env) {
       return jsonResponse({ success: false, message: "请输入密码。" }, 400);
     }
     
-    // 检查是否被锁定
     const lockoutCheck = await checkLoginLockout(env, ip, username);
     if (lockoutCheck.locked) {
       await logLoginAttempt(env, request, false, username, "账号已锁定");
       return jsonResponse({ success: false, message: lockoutCheck.message }, 429);
     }
     
-    // 验证密码
     const fullData = await readFullData(env);
     const admin = fullData.admin;
     if (!admin || !admin.passwordSalt || !admin.passwordHash) {
@@ -204,23 +202,25 @@ async function handleLogin(request, env) {
       return jsonResponse({ success: false, message: "密码错误。" }, 401);
     }
     
-    // 清除失败记录
     await clearLoginAttempts(env, ip, username);
     
-    // 创建会话
     const { session, tokens } = await createSession(env, request, username);
     
-    // 记录成功日志
     await logLoginAttempt(env, request, true, username, "登录成功");
     
-    // 返回 Access Token
+    // 🆕 准备返回的数据（与 handleGetAdminData 逻辑一致）
+    const data = sanitiseData(fullData);
+    const weather = normaliseWeatherSettingsValue(fullData.settings?.weather);
+    const cityString = Array.isArray(weather.city) ? weather.city.join(" ") : weather.city;
+    data.settings.weather = { city: cityString };
+    
     const response = jsonResponse({
       success: true,
       accessToken: tokens.accessToken,
       expiresIn: SECURITY_CONFIG.ACCESS_TOKEN_TTL,
+      data: data, // 🆕 直接返回数据
     });
     
-    // 设置 HttpOnly Cookie
     response.headers.set(
       "Set-Cookie",
       `refreshToken=${tokens.refreshToken}; HttpOnly; Secure; SameSite=Strict; Max-Age=${SECURITY_CONFIG.REFRESH_TOKEN_TTL}; Path=/`
@@ -232,6 +232,7 @@ async function handleLogin(request, env) {
     return jsonResponse({ success: false, message: "登录失败" }, 500);
   }
 }
+
 
 async function handleGetData(request, env) {
   try {

@@ -1255,7 +1255,7 @@ async function performLogin(password) {
   const response = await fetch(LOGIN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    credentials: "include", // 🆕 接收 Cookie
+    credentials: "include",
     body: JSON.stringify({ password }),
   });
   if (!response.ok) {
@@ -1266,15 +1266,25 @@ async function performLogin(password) {
   if (!result || !result.success || !result.accessToken) {
     throw new Error(result?.message || "登录失败");
   }
-  // 🆕 存储到内存（不再使用 localStorage）
+  
   tokenManager.setAccessToken(result.accessToken);
   
-  const success = await loadData(false);
-  if (!success) {
-    throw new Error("数据加载失败，请重试。");
+  // 🆕 如果登录响应包含数据，直接使用
+  if (result.data) {
+    updateStateFromResponse(result.data);
+    hideAuthOverlay();
+    if (logoutButton) logoutButton.disabled = false;
+    setStatus("登录成功，数据已加载。", "success");
+  } else {
+    // 兜底：如果没有数据，仍然调用 loadData
+    const success = await loadData(false);
+    if (!success) {
+      throw new Error("数据加载失败，请重试。");
+    }
+    setStatus("登录成功，数据已加载。", "success");
   }
-  setStatus("登录成功，数据已加载。", "success");
 }
+
 
 async function handleLoginSubmit(event) {
   event.preventDefault();
