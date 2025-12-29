@@ -51,7 +51,10 @@ router.get("/api/fetch-logo", requireAuth, handleFetchLogo);
 // =================================================================================
 
 router.get("/admin", (request, env, ctx) => serveStatic(request, env, ctx, "/admin.html"));
-router.get("/admin/", (request, env, ctx) => serveStatic(request, env, ctx, "/admin.html"));
+// 🆕 将 /admin/ 重定向到 /admin（301 永久重定向）
+router.get("/admin/", () => {
+  return Response.redirect("/admin", 301);
+});
 
 // Fallback for all other GET requests to serve static assets or index.html
 router.get("*", (request, env, ctx) => serveStatic(request, env, ctx));
@@ -121,11 +124,11 @@ async function serveStatic(request, env, ctx, forcePath) {
     );
     return asset;
   } catch (e) {
-    // For SPA-like behavior, only fall back to index.html for navigation requests
-    const isHTMLRequest = (request.headers.get("accept") || "").includes("text/html");
-    const isRoot = new URL(request.url).pathname === "/";
+    // 🆕 只对根路径做 fallback，移除 isHTMLRequest 判断
+    const currentUrl = new URL(request.url);
+    const isRoot = currentUrl.pathname === "/";
 
-    if (isHTMLRequest || isRoot) {
+    if (isRoot) {
       try {
         const notFoundRequest = new Request(new URL("/index.html", request.url), request);
         return await getAssetFromKV(
@@ -143,10 +146,11 @@ async function serveStatic(request, env, ctx, forcePath) {
       }
     }
     
-    // For other asset types (JS, CSS, etc.), return a 404
+    // 🆕 其他所有路径返回 404
     return new Response("Not Found", { status: 404 });
   }
 }
+
 
 // =================================================================================
 // API Handlers
