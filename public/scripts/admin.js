@@ -78,8 +78,6 @@ function replaceChildrenSafe(target, ...nodes) {
 }
 
 const STORAGE_KEY = "modern-navigation-admin-token";
-const EXPIRY_KEY = "simpage-admin-expiry";  // 🆕 添加这行
-const CHECK_INTERVAL = 60 * 1000;           // 🆕 添加这行（每分钟检查一次）
 const DATA_ENDPOINT = "/api/admin/data";
 const LOGIN_ENDPOINT = "/api/login";
 const PASSWORD_ENDPOINT = "/api/admin/password";
@@ -957,6 +955,7 @@ async function loadData(showStatus = true) {
     const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
 
     updateStateFromResponse(data);
+    hideAuthOverlay();
     if (logoutButton) logoutButton.disabled = false;
     if (showStatus) {
       setStatus("数据已加载。", "neutral");
@@ -1076,65 +1075,17 @@ async function extractErrorMessage(response) {
   return response.statusText;
 }
 
-// ========== 🆕 在 extractErrorMessage 函数之后添加以下三个函数 ==========
-
-/**
- * 验证 token 是否有效
- */
-function isTokenValid() {
-  const token = localStorage.getItem(STORAGE_KEY);
-  const expiresAt = localStorage.getItem(EXPIRY_KEY);
-
-  if (!token || !expiresAt) {
-    return false;
-  }
-
-  if (Date.now() >= parseInt(expiresAt, 10)) {
-    // Token 已过期
-    clearStoredToken();
-    return false;
-  }
-
-  return true;
-}
-
-/**
- * 跳转到登录页
- */
-function redirectToLogin(message) {
-  clearStoredToken();
-  if (message) {
-    alert(message);
-  }
-  window.location.replace("/admin");
-}
-
-/**
- * 定期检查 token 有效性
- */
-function startTokenCheck() {
-  setInterval(() => {
-    if (!isTokenValid()) {
-      redirectToLogin("登录已过期，请重新登录。");
-    }
-  }, CHECK_INTERVAL);
-}
-
 function loadStoredToken() {
-  if (!isTokenValid()) {
-    redirectToLogin("登录已过期，请重新登录。");
+  try {
+    return window.localStorage.getItem(STORAGE_KEY) || "";
+  } catch (_error) {
     return "";
   }
-  return localStorage.getItem(STORAGE_KEY) || "";
 }
 
-
-function saveToken(token, expiresAt) {
+function saveToken(token) {
   try {
     window.localStorage.setItem(STORAGE_KEY, token);
-    if (expiresAt) {
-      window.localStorage.setItem(EXPIRY_KEY, expiresAt);
-    }
   } catch (_error) {
     // ignore storage errors
   }
@@ -1143,32 +1094,79 @@ function saveToken(token, expiresAt) {
 function clearStoredToken() {
   try {
     window.localStorage.removeItem(STORAGE_KEY);
-    window.localStorage.removeItem(EXPIRY_KEY);  // 🆕 添加这行
   } catch (_error) {
     // ignore storage errors
   }
 }
 
 function handleUnauthorized(message) {
-  redirectToLogin(message || "登录状态已失效，请重新登录。");
+  clearStoredToken();
+  authToken = "";
+  state.apps = [];
+  state.bookmarks = [];
+  state.settings = normaliseSettingsIncoming(null);
+  applySettingsToInputs(state.settings);
+  render();
+  resetDirty();
+  showAuthOverlay();
+  setPasswordMessage("");
+  setStatus(message || "登录状态已失效，请重新登录。", "error");
+  if (logoutButton) logoutButton.disabled = true;
 }
 
-async function handleLogout() {
-  if (!authToken) {
-    redirectToLogin();
-    return;
+function handleLogout() {
+  clearStoredToken();
+  authToken = "";
+  state.apps = [];
+  state.bookmarks = [];
+  state.settings = normaliseSettingsIncoming(null);
+  applySettingsToInputs(state.settings);
+  render();
+  resetDirty();
+  setPasswordMessage("");
+  setStatus("已退出登录，正在返回首页。", "neutral");
+  if (logoutButton) {
+    logoutButton.disabled = true;
   }
-  try {
-    await fetch("/api/logout", {
-      method: "POST",
-      headers: buildAuthHeaders(),
-    });
-  } catch (error) {
-    console.error("退出登录失败", error);
-  }
-  redirectToLogin("已退出登录。");
+  window.location.replace("/");
 }
 
+function showAuthOverlay() {
+  if (!authOverlay) return;
+  authOverlay.hidden = false;
+  setLoginError("");
+  setPasswordMessage("");
+  if (loginPasswordInput) {
+    loginPasswordInput.disabled = false;
+    loginPasswordInput.value = "";
+    setTimeout(() => {
+      loginPasswordInput.focus();
+    }, 0);
+  }
+  if (logoutButton) logoutButton.disabled = true;
+}
+
+function hideAuthOverlay() {
+  if (!authOverlay) return;
+  authOverlay.hidden = true;
+  setLoginError("");
+  setPasswordMessage("");
+  if (loginPasswordInput) {
+    loginPasswordInput.value = "";
+    loginPasswordInput.disabled = false;
+  }
+}
+
+function setLoginError(message) {
+  if (!loginError) return;
+  if (message) {
+    loginError.textContent = message;
+    loginError.hidden = false;
+  } else {
+    loginError.textContent = "";
+    loginError.hidden = true;
+  }
+}
 
 function setPasswordMessage(message, variant = "neutral") {
   if (!passwordMessage) return;
@@ -1187,13 +1185,69 @@ function setPasswordMessage(message, variant = "neutral") {
   }
 }
 
+async function performLogin(password) {
+  const response = await fetch(LOGIN_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
+  });
+
+  if (!response.ok) {
+    const message = await extractErrorMessage(response);
+    throw new Error(message || "登录失败");
+  }
+
+  const result = await response.json();
+  if (!result || !result.success || !result.token) {
+    throw new Error(result?.message || "登录失败");
+  }
+
+  authToken = result.token;
+  saveToken(authToken);
+  const success = await loadData(false);
+  if (!success) {
+    throw new Error("数据加载失败，请重试。");
+  }
+  setStatus("登录成功，数据已加载。", "success");
+}
+
+async function handleLoginSubmit(event) {
+  event.preventDefault();
+  if (!loginPasswordInput) return;
+
+  const password = loginPasswordInput.value.trim();
+  if (!password) {
+    setLoginError("请输入密码。");
+    loginPasswordInput.focus();
+    return;
+  }
+
+  setLoginError("");
+  const submitButton = loginForm ? loginForm.querySelector('button[type="submit"]') : null;
+  if (submitButton) submitButton.disabled = true;
+  loginPasswordInput.disabled = true;
+
+  try {
+    await performLogin(password);
+    setPasswordMessage("");
+    loginPasswordInput.value = "";
+  } catch (error) {
+    console.error("登录失败", error);
+    setLoginError(error.message || "登录失败，请重试。");
+    loginPasswordInput.focus();
+  } finally {
+    if (submitButton) submitButton.disabled = false;
+    loginPasswordInput.disabled = false;
+  }
+}
+
 async function handlePasswordSubmit(event) {
   event.preventDefault();
   if (!passwordForm) return;
 
   if (!authToken) {
     setPasswordMessage("请登录后再修改密码。", "error");
-    redirectToLogin("请登录后再修改密码。");
+    showAuthOverlay();
     return;
   }
 
@@ -1469,6 +1523,9 @@ function bindEvents() {
     });
   }
 
+  if (loginForm) {
+    loginForm.addEventListener("submit", handleLoginSubmit);
+  }
 
   if (logoutButton) {
     logoutButton.addEventListener("click", handleLogout);
@@ -1530,7 +1587,6 @@ function handleBackToTopVisibility() {
 
 async function initialise() {
   updatePageIdentity(state.settings);
-  
   if (backToTopButton) {
     backToTopButton.addEventListener("click", (event) => {
       event.preventDefault();
@@ -1539,31 +1595,25 @@ async function initialise() {
     handleBackToTopVisibility();
     window.addEventListener("scroll", handleBackToTopVisibility, { passive: true });
   }
-  
   bindEvents();
   applySettingsToInputs(state.settings);
   render();
   resetDirty();
-  
-  // 🆕 启动 token 检查
-  startTokenCheck();
-  
   const storedToken = loadStoredToken();
   if (storedToken) {
     authToken = storedToken;
     setStatus("正在验证登录状态...", "neutral");
     const success = await loadData(false);
     if (!success) {
-      redirectToLogin("登录已过期，请重新登录。");
+      showAuthOverlay();
     } else {
       setStatus("数据已加载。", "neutral");
-      if (logoutButton) logoutButton.disabled = false;
     }
   } else {
-    redirectToLogin("请先登录。");
+    showAuthOverlay();
+    setStatus("请登录后开始编辑。", "neutral");
   }
 }
-
 
 if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initialise);

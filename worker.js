@@ -30,7 +30,7 @@ const DEFAULT_WEATHER_CONFIG = Object.freeze({
 });
 
 const DEFAULT_ADMIN_PASSWORD = "admin123";
-const SESSION_TTL_SECONDS = 2 * 60 * 60; // 2 hours in seconds
+const SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours in seconds
 const AUTH_HEADER_PREFIX = "Bearer ";
 
 // =================================================================================
@@ -50,29 +50,8 @@ router.get("/api/fetch-logo", requireAuth, handleFetchLogo);
 // Static Asset and Fallback Routes
 // =================================================================================
 
-router.get("/admin", (request, env, ctx) => serveStatic(request, env, ctx, "/admin-login.html"));
-router.get("/admin/", (request, env, ctx) => serveStatic(request, env, ctx, "/admin-login.html"));
-router.get("/admin/console", (request, env, ctx) => serveStatic(request, env, ctx, "/admin-console.html"));
-router.get("/admin/console/", (request, env, ctx) => serveStatic(request, env, ctx, "/admin-console.html"));
-
-router.post("/api/logout", requireAuth, handleLogout);
-
-async function handleLogout(request, env) {
-  const raw = request.headers.get("authorization");
-  const token = raw.slice(AUTH_HEADER_PREFIX.length).trim();
-  
-  // 删除 token
-  await env.SESSIONS.delete(token);
-  
-  // 清除当前会话标记
-  const currentToken = await env.SESSIONS.get("admin:current_session");
-  if (currentToken === token) {
-    await env.SESSIONS.delete("admin:current_session");
-  }
-  
-  return jsonResponse({ success: true, message: "已退出登录。" });
-}
-
+router.get("/admin", (request, env, ctx) => serveStatic(request, env, ctx, "/admin.html"));
+router.get("/admin/", (request, env, ctx) => serveStatic(request, env, ctx, "/admin.html"));
 
 // Fallback for all other GET requests to serve static assets or index.html
 router.get("*", (request, env, ctx) => serveStatic(request, env, ctx));
@@ -176,16 +155,14 @@ async function serveStatic(request, env, ctx, forcePath) {
 async function handleLogin(request, env) {
   const body = await request.json().catch(() => null);
   const password = typeof body?.password === "string" ? body.password : "";
-  
   if (!password) {
     return jsonResponse({ success: false, message: "请输入密码。" }, 400);
   }
 
   const fullData = await readFullData(env);
   const admin = fullData.admin;
-  
   if (!admin || !admin.passwordSalt || !admin.passwordHash) {
-    return jsonResponse({ success: false, message: "登录功能暂不可用。" }, 500);
+    return jsonResponse({ success: false, message: "登录功能暂不可用，请稍后再试。" }, 500);
   }
 
   const isMatch = await verifyPassword(password, admin.passwordSalt, admin.passwordHash);
@@ -193,37 +170,11 @@ async function handleLogin(request, env) {
     return jsonResponse({ success: false, message: "密码错误。" }, 401);
   }
 
-  // 单点登录逻辑：使旧 token 失效
-  const oldToken = await env.SESSIONS.get("admin:current_session");
-  if (oldToken) {
-    await env.SESSIONS.delete(oldToken);
-  }
-
-  // ✅ 定义时间变量
-  const now = Date.now();
-  
-  // 生成新 token
   const token = generateToken();
-  const expiresAt = now + SESSION_TTL_SECONDS * 1000;
-  
-  // ✅ 存储完整的 session 数据
-  await env.SESSIONS.put(token, JSON.stringify({ 
-    createdAt: now,
-    expiresAt: expiresAt
-  }), {
-    expirationTtl: SESSION_TTL_SECONDS,
-  });
-  
-  // 更新当前会话标记
-  await env.SESSIONS.put("admin:current_session", token, {
-    expirationTtl: SESSION_TTL_SECONDS,
-  });
+  await env.SESSIONS.put(token, "active", { expirationTtl: SESSION_TTL_SECONDS });
 
-  return jsonResponse({ success: true, token, expiresAt });
+  return jsonResponse({ success: true, token });
 }
-
-
-
 
 async function handleGetData(request, env) {
   try {
@@ -422,37 +373,12 @@ async function requireAuth(request, env) {
     return jsonResponse({ success: false, message: "请登录后再执行此操作。" }, 401);
   }
 
-  // 验证 token 是否存在
-  const sessionData = await env.SESSIONS.get(token);
-  if (!sessionData) {
+  const session = await env.SESSIONS.get(token);
+  if (!session) {
     return jsonResponse({ success: false, message: "登录状态已失效，请重新登录。" }, 401);
   }
-
-  // 验证是否为当前有效会话（单点登录）
-  const currentToken = await env.SESSIONS.get("admin:current_session");
-  if (currentToken !== token) {
-    return jsonResponse({ success: false, message: "您的账号已在其他地方登录。" }, 401);
-  }
-
-  // ✅ 验证过期时间（双重保险）
-  try {
-    const session = JSON.parse(sessionData);
-    if (session.expiresAt && Date.now() > session.expiresAt) {
-      await env.SESSIONS.delete(token);
-      await env.SESSIONS.delete("admin:current_session");
-      return jsonResponse({ success: false, message: "登录已过期，请重新登录。" }, 401);
-    }
-  } catch (error) {
-    console.error("Session data parse error:", error);
-    await env.SESSIONS.delete(token);
-    return jsonResponse({ success: false, message: "登录状态异常，请重新登录。" }, 401);
-  }
-  
-  // 验证通过，继续执行后续处理器
+  // The TTL is handled by KV, so if the session exists, it's valid.
 }
-
-
-
 
 // =================================================================================
 // Data Management (KV)

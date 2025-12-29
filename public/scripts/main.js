@@ -82,8 +82,6 @@ function calculateRunningDays(startDate) {
 }
 
 
-
-
 function replaceChildrenSafe(target, ...nodes) {
   if (!target) return;
   if (typeof target.replaceChildren === "function") {
@@ -563,16 +561,15 @@ function applySiteSettings(settings) {
   updateGreetingDisplay();
   updateFooter(prepared.footer);
   setActiveWeather(prepared.weather, { source: "settings" });
-  applyGlassOpacity(prepared.glassOpacity);
-  // ✅ 删除：loadWallpaper(prepared.wallpaperUrl);
-  // 根据开关决定是否加载壁纸
+  applyGlassOpacity(prepared.glassOpacity); // 🆕 应用透明度
+  loadWallpaper(prepared.wallpaperUrl); // 🆕 在这里加载壁纸
+  // 🆕 根据开关决定是否加载壁纸
   if (prepared.useWallpaper) {
     loadWallpaper(prepared.wallpaperUrl);
   } else {
     removeWallpaper();
   }
 }
-
 
 /**
  * 移除壁纸背景
