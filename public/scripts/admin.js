@@ -81,6 +81,88 @@ const STORAGE_KEY = "modern-navigation-admin-token";
 const DATA_ENDPOINT = "/api/admin/data";
 const LOGIN_ENDPOINT = "/api/login";
 const PASSWORD_ENDPOINT = "/api/admin/password";
+// =================================================================================
+// 🆕 Token Manager (内存存储)
+// =================================================================================
+class TokenManager {
+  constructor() {
+    this.accessToken = null;
+    this.refreshPromise = null;
+  }
+  
+  setAccessToken(token) {
+    this.accessToken = token;
+  }
+  
+  getAccessToken() {
+    return this.accessToken;
+  }
+  
+  clearAccessToken() {
+    this.accessToken = null;
+  }
+  
+  async refreshToken() {
+    // 防止并发刷新
+    if (this.refreshPromise) {
+      return this.refreshPromise;
+    }
+    
+    this.refreshPromise = fetch("/api/refresh", {
+      method: "POST",
+      credentials: "include", // 发送 Cookie
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("刷新失败");
+        }
+        const data = await response.json();
+        if (data.success) {
+          this.setAccessToken(data.accessToken);
+          return data.accessToken;
+        }
+        throw new Error(data.message || "刷新失败");
+      })
+      .finally(() => {
+        this.refreshPromise = null;
+      });
+    
+    return this.refreshPromise;
+  }
+}
+const tokenManager = new TokenManager();
+// =================================================================================
+// 🆕 Fetch with Auth Interceptor
+// =================================================================================
+async function fetchWithAuth(url, options = {}) {
+  const token = tokenManager.getAccessToken();
+  
+  if (!token) {
+    throw new Error("未登录");
+  }
+  
+  const headers = {
+    ...options.headers,
+    Authorization: `Bearer ${token}`,
+  };
+  
+  let response = await fetch(url, { ...options, headers });
+  
+  // 401 自动刷新
+  if (response.status === 401) {
+    try {
+      const newToken = await tokenManager.refreshToken();
+      headers.Authorization = `Bearer ${newToken}`;
+      response = await fetch(url, { ...options, headers });
+    } catch (error) {
+      // 刷新失败，跳转登录
+      handleUnauthorized("登录已过期，请重新登录。");
+      throw error;
+    }
+  }
+  
+  return response;
+}
 
 const defaultDocumentTitle = document.title || "导航后台编辑";
 const defaultFaviconHref = faviconLink?.getAttribute("href") || "data:,";
@@ -926,34 +1008,29 @@ function updateStateFromResponse(data) {
 }
 
 function buildAuthHeaders(extra = {}) {
-  if (!authToken) {
+  const token = tokenManager.getAccessToken();
+  if (!token) {
     return { ...extra };
   }
   return {
     ...extra,
-    Authorization: `Bearer ${authToken}`,
+    Authorization: `Bearer ${token}`,
   };
 }
 
 async function loadData(showStatus = true) {
-  if (!authToken) return false;
+  if (!tokenManager.getAccessToken()) return false;
   try {
-    const response = await fetch(DATA_ENDPOINT, {
-      headers: buildAuthHeaders(),
-    });
-
+    const response = await fetchWithAuth(DATA_ENDPOINT);
     if (response.status === 401) {
       handleUnauthorized("登录已过期，请重新登录。");
       return false;
     }
-
     if (!response.ok) {
       throw new Error("加载数据失败");
     }
-
     const payload = await response.json();
     const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
-
     updateStateFromResponse(data);
     hideAuthOverlay();
     if (logoutButton) logoutButton.disabled = false;
@@ -1029,9 +1106,9 @@ async function saveChanges() {
   };
 
   try {
-    const response = await fetch(DATA_ENDPOINT, {
+    const response = await fetchWithAuth(DATA_ENDPOINT, {
       method: "PUT",
-      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
 
@@ -1075,32 +1152,10 @@ async function extractErrorMessage(response) {
   return response.statusText;
 }
 
-function loadStoredToken() {
-  try {
-    return window.localStorage.getItem(STORAGE_KEY) || "";
-  } catch (_error) {
-    return "";
-  }
-}
 
-function saveToken(token) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, token);
-  } catch (_error) {
-    // ignore storage errors
-  }
-}
-
-function clearStoredToken() {
-  try {
-    window.localStorage.removeItem(STORAGE_KEY);
-  } catch (_error) {
-    // ignore storage errors
-  }
-}
 
 function handleUnauthorized(message) {
-  clearStoredToken();
+  tokenManager.clearAccessToken(); // 🆕 清除内存中的 Token
   authToken = "";
   state.apps = [];
   state.bookmarks = [];
@@ -1115,20 +1170,31 @@ function handleUnauthorized(message) {
 }
 
 function handleLogout() {
-  clearStoredToken();
-  authToken = "";
-  state.apps = [];
-  state.bookmarks = [];
-  state.settings = normaliseSettingsIncoming(null);
-  applySettingsToInputs(state.settings);
-  render();
-  resetDirty();
-  setPasswordMessage("");
-  setStatus("已退出登录，正在返回首页。", "neutral");
-  if (logoutButton) {
-    logoutButton.disabled = true;
-  }
-  window.location.replace("/");
+  const token = tokenManager.getAccessToken();
+  
+  // 🆕 调用登出接口
+  fetch("/api/logout", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+    },
+    credentials: "include",
+  }).finally(() => {
+    tokenManager.clearAccessToken(); // 🆕 清除内存中的 Token
+    authToken = "";
+    state.apps = [];
+    state.bookmarks = [];
+    state.settings = normaliseSettingsIncoming(null);
+    applySettingsToInputs(state.settings);
+    render();
+    resetDirty();
+    setPasswordMessage("");
+    setStatus("已退出登录，正在返回首页。", "neutral");
+    if (logoutButton) {
+      logoutButton.disabled = true;
+    }
+    window.location.replace("/");
+  });
 }
 
 function showAuthOverlay() {
@@ -1189,21 +1255,20 @@ async function performLogin(password) {
   const response = await fetch(LOGIN_ENDPOINT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include", // 🆕 接收 Cookie
     body: JSON.stringify({ password }),
   });
-
   if (!response.ok) {
     const message = await extractErrorMessage(response);
     throw new Error(message || "登录失败");
   }
-
   const result = await response.json();
-  if (!result || !result.success || !result.token) {
+  if (!result || !result.success || !result.accessToken) {
     throw new Error(result?.message || "登录失败");
   }
-
-  authToken = result.token;
-  saveToken(authToken);
+  // 🆕 存储到内存（不再使用 localStorage）
+  tokenManager.setAccessToken(result.accessToken);
+  
   const success = await loadData(false);
   if (!success) {
     throw new Error("数据加载失败，请重试。");
@@ -1301,9 +1366,9 @@ async function handlePasswordSubmit(event) {
   let focusCurrentInput = false;
 
   try {
-    const response = await fetch(PASSWORD_ENDPOINT, {
+    const response = await fetchWithAuth(PASSWORD_ENDPOINT, {
       method: "POST",
-      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ currentPassword: trimmedCurrent, newPassword: newValue }),
     });
 
@@ -1362,9 +1427,7 @@ async function handleFetchLogo() {
   setModalError("");
 
   try {
-    const response = await fetch(`/api/fetch-logo?targetUrl=${encodeURIComponent(targetUrl)}`, {
-      headers: buildAuthHeaders(),
-    });
+    const response = await fetchWithAuth(`/api/fetch-logo?targetUrl=${encodeURIComponent(targetUrl)}`);
 
     if (response.status === 401) {
       handleUnauthorized("登录已过期，请重新登录。");
@@ -1599,24 +1662,20 @@ async function initialise() {
   applySettingsToInputs(state.settings);
   render();
   resetDirty();
-  const storedToken = loadStoredToken();
-  if (storedToken) {
-    authToken = storedToken;
+  try {
     setStatus("正在验证登录状态...", "neutral");
+    const newToken = await tokenManager.refreshToken();
     const success = await loadData(false);
-    if (!success) {
-      showAuthOverlay();
-    } else {
-      setStatus("数据已加载。", "neutral");
+    if (newToken) {
+      const success = await loadData(false);
+      if (success) {
+        setStatus("数据已加载。", "neutral");
+        return
+      }
     }
-  } else {
-    showAuthOverlay();
-    setStatus("请登录后开始编辑。", "neutral");
+  } catch (error) {
+  console.log("无有效会话，显示登录页");
   }
-}
-
-if (document.readyState === "loading") {
-  document.addEventListener("DOMContentLoaded", initialise);
-} else {
-  initialise();
+  showAuthOverlay();
+  setStatus("请登录后开始编辑。", "neutral");
 }

@@ -33,6 +33,16 @@ const DEFAULT_ADMIN_PASSWORD = "admin123";
 const SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours in seconds
 const AUTH_HEADER_PREFIX = "Bearer ";
 
+// 🆕 Security Configuration
+// =================================================================================
+const SECURITY_CONFIG = Object.freeze({
+  ACCESS_TOKEN_TTL: 15 * 60, // 15 分钟
+  REFRESH_TOKEN_TTL: 7 * 24 * 60 * 60, // 7 天
+  MAX_LOGIN_ATTEMPTS: 5, // 最大失败次数
+  LOCKOUT_DURATION: 15 * 60, // 锁定时长（秒）
+  ENABLE_SSO: true, // 启用单点登录
+  ENABLE_IP_CHECK: false, // IP 变化检测（可选）
+});
 // =================================================================================
 // API Routes
 // =================================================================================
@@ -45,6 +55,10 @@ router.put("/api/admin/data", requireAuth, handleDataUpdate);
 router.put("/api/data", requireAuth, handleDataUpdate); // Legacy endpoint
 router.post("/api/admin/password", requireAuth, handlePasswordUpdate);
 router.get("/api/fetch-logo", requireAuth, handleFetchLogo);
+// 🆕 新增 API 路由
+router.post("/api/refresh", handleRefreshToken);
+router.post("/api/logout", handleLogout);
+router.get("/api/admin/sessions", requireAuth, handleGetSessions);
 
 // =================================================================================
 // Static Asset and Fallback Routes
@@ -157,27 +171,66 @@ async function serveStatic(request, env, ctx, forcePath) {
 // =================================================================================
 
 async function handleLogin(request, env) {
-  const body = await request.json().catch(() => null);
-  const password = typeof body?.password === "string" ? body.password : "";
-  if (!password) {
-    return jsonResponse({ success: false, message: "请输入密码。" }, 400);
+  try {
+    const body = await request.json().catch(() => null);
+    const password = typeof body?.password === "string" ? body.password : "";
+    const ip = getClientIP(request);
+    const username = "admin";
+    
+    if (!password) {
+      await logLoginAttempt(env, request, false, username, "密码为空");
+      return jsonResponse({ success: false, message: "请输入密码。" }, 400);
+    }
+    
+    // 检查是否被锁定
+    const lockoutCheck = await checkLoginLockout(env, ip, username);
+    if (lockoutCheck.locked) {
+      await logLoginAttempt(env, request, false, username, "账号已锁定");
+      return jsonResponse({ success: false, message: lockoutCheck.message }, 429);
+    }
+    
+    // 验证密码
+    const fullData = await readFullData(env);
+    const admin = fullData.admin;
+    if (!admin || !admin.passwordSalt || !admin.passwordHash) {
+      return jsonResponse({ success: false, message: "登录功能暂不可用。" }, 500);
+    }
+    
+    const isMatch = await verifyPassword(password, admin.passwordSalt, admin.passwordHash);
+    
+    if (!isMatch) {
+      await recordLoginFailure(env, ip, username);
+      await logLoginAttempt(env, request, false, username, "密码错误");
+      return jsonResponse({ success: false, message: "密码错误。" }, 401);
+    }
+    
+    // 清除失败记录
+    await clearLoginAttempts(env, ip, username);
+    
+    // 创建会话
+    const { session, tokens } = await createSession(env, request, username);
+    
+    // 记录成功日志
+    await logLoginAttempt(env, request, true, username, "登录成功");
+    
+    // 返回 Access Token
+    const response = jsonResponse({
+      success: true,
+      accessToken: tokens.accessToken,
+      expiresIn: SECURITY_CONFIG.ACCESS_TOKEN_TTL,
+    });
+    
+    // 设置 HttpOnly Cookie
+    response.headers.set(
+      "Set-Cookie",
+      `refreshToken=${tokens.refreshToken}; HttpOnly; Secure; SameSite=Strict; Max-Age=${SECURITY_CONFIG.REFRESH_TOKEN_TTL}; Path=/`
+    );
+    
+    return response;
+  } catch (error) {
+    console.error("登录失败:", error);
+    return jsonResponse({ success: false, message: "登录失败" }, 500);
   }
-
-  const fullData = await readFullData(env);
-  const admin = fullData.admin;
-  if (!admin || !admin.passwordSalt || !admin.passwordHash) {
-    return jsonResponse({ success: false, message: "登录功能暂不可用，请稍后再试。" }, 500);
-  }
-
-  const isMatch = await verifyPassword(password, admin.passwordSalt, admin.passwordHash);
-  if (!isMatch) {
-    return jsonResponse({ success: false, message: "密码错误。" }, 401);
-  }
-
-  const token = generateToken();
-  await env.SESSIONS.put(token, "active", { expirationTtl: SESSION_TTL_SECONDS });
-
-  return jsonResponse({ success: true, token });
 }
 
 async function handleGetData(request, env) {
@@ -309,6 +362,97 @@ async function handlePasswordUpdate(request, env) {
   await writeFullData(env, updatedData);
   return jsonResponse({ success: true, message: "密码已更新，下次登录请使用新密码。" });
 }
+/**
+ * 🆕 刷新 Token 接口
+ */
+async function handleRefreshToken(request, env) {
+  try {
+    const cookies = request.headers.get("cookie") || "";
+    const refreshToken = cookies
+      .split(";")
+      .find(c => c.trim().startsWith("refreshToken="))
+      ?.split("=")[1];
+    
+    if (!refreshToken) {
+      return jsonResponse({ success: false, message: "未找到 Refresh Token" }, 401);
+    }
+    
+    const result = await refreshAccessToken(env, refreshToken);
+    
+    if (!result.success) {
+      return jsonResponse({ success: false, message: result.message }, 401);
+    }
+    
+    return jsonResponse({
+      success: true,
+      accessToken: result.accessToken,
+      expiresIn: SECURITY_CONFIG.ACCESS_TOKEN_TTL,
+    });
+  } catch (error) {
+    console.error("刷新 Token 失败:", error);
+    return jsonResponse({ success: false, message: "刷新失败" }, 500);
+  }
+}
+/**
+ * 🆕 登出接口
+ */
+async function handleLogout(request, env) {
+  try {
+    const authHeader = request.headers.get("authorization");
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+      const token = authHeader.slice(7).trim();
+      await logoutSession(env, token);
+    }
+    
+    // 清除 Cookie
+    const response = jsonResponse({ success: true, message: "已登出" });
+    response.headers.set(
+      "Set-Cookie",
+      "refreshToken=; HttpOnly; Secure; SameSite=Strict; Max-Age=0; Path=/"
+    );
+    
+    return response;
+  } catch (error) {
+    console.error("登出失败:", error);
+    return jsonResponse({ success: false, message: "登出失败" }, 500);
+  }
+}
+/**
+ * 🆕 查看活跃会话
+ */
+async function handleGetSessions(request, env) {
+  try {
+    const userId = request.session?.userId || "admin";
+    const sessionId = await env.SESSIONS.get(`ACTIVE_SESSION:${userId}`);
+    
+    if (!sessionId) {
+      return jsonResponse({ success: true, sessions: [] });
+    }
+    
+    const session = await env.SESSIONS.get(`SESSION:${sessionId}`, { type: "json" });
+    
+    if (!session) {
+      return jsonResponse({ success: true, sessions: [] });
+    }
+    
+    // 隐藏敏感信息
+    const sanitized = {
+      sessionId: session.sessionId,
+      createdAt: session.createdAt,
+      lastAccessAt: session.lastAccessAt,
+      deviceInfo: {
+        userAgent: session.deviceInfo.userAgent,
+        ip: session.deviceInfo.ip,
+      },
+      isActive: session.isActive,
+    };
+    
+    return jsonResponse({ success: true, sessions: [sanitized] });
+  } catch (error) {
+    console.error("获取会话失败:", error);
+    return jsonResponse({ success: false, message: "获取会话失败" }, 500);
+  }
+}
 
 /**
  * 🆕 计算网站运行天数
@@ -361,6 +505,302 @@ function handleFetchLogo(request, env) {
     return jsonResponse({ success: false, message: "生成 Logo 链接失败" }, 500);
   }
 }
+// =================================================================================
+// 🆕 Security Utility Functions
+// =================================================================================
+/**
+ * 生成设备指纹
+ */
+function generateDeviceFingerprint(request) {
+  const userAgent = request.headers.get("user-agent") || "";
+  const acceptLanguage = request.headers.get("accept-language") || "";
+  const acceptEncoding = request.headers.get("accept-encoding") || "";
+  
+  const fingerprint = `${userAgent}|${acceptLanguage}|${acceptEncoding}`;
+  return hashString(fingerprint);
+}
+/**
+ * 简单字符串哈希
+ */
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+}
+/**
+ * 获取客户端 IP
+ */
+function getClientIP(request) {
+  return request.headers.get("cf-connecting-ip") || 
+         request.headers.get("x-forwarded-for")?.split(",")[0] || 
+         "unknown";
+}
+/**
+ * 生成 Token 对
+ */
+function generateTokenPair() {
+  return {
+    accessToken: crypto.randomUUID(),
+    refreshToken: crypto.randomUUID(),
+  };
+}
+/**
+ * 检查是否被锁定
+ */
+async function checkLoginLockout(env, ip, username) {
+  const key = `LOGIN_ATTEMPTS:${ip}:${username}`;
+  const data = await env.SESSIONS.get(key, { type: "json" });
+  
+  if (!data) return { locked: false };
+  
+  const now = Date.now();
+  if (data.lockedUntil && now < data.lockedUntil) {
+    const remainingSeconds = Math.ceil((data.lockedUntil - now) / 1000);
+    return {
+      locked: true,
+      remainingSeconds,
+      message: `账号已被锁定，请 ${remainingSeconds} 秒后重试。`,
+    };
+  }
+  
+  return { locked: false, attempts: data.attempts || 0 };
+}
+/**
+ * 记录登录失败
+ */
+async function recordLoginFailure(env, ip, username) {
+  const key = `LOGIN_ATTEMPTS:${ip}:${username}`;
+  const data = await env.SESSIONS.get(key, { type: "json" }) || { attempts: 0 };
+  
+  data.attempts += 1;
+  data.lastAttempt = Date.now();
+  
+  if (data.attempts >= SECURITY_CONFIG.MAX_LOGIN_ATTEMPTS) {
+    data.lockedUntil = Date.now() + (SECURITY_CONFIG.LOCKOUT_DURATION * 1000);
+  }
+  
+  await env.SESSIONS.put(key, JSON.stringify(data), {
+    expirationTtl: SECURITY_CONFIG.LOCKOUT_DURATION,
+  });
+  
+  return data;
+}
+/**
+ * 清除登录失败记录
+ */
+async function clearLoginAttempts(env, ip, username) {
+  const key = `LOGIN_ATTEMPTS:${ip}:${username}`;
+  await env.SESSIONS.delete(key);
+}
+/**
+ * 创建会话
+ */
+async function createSession(env, request, userId = "admin") {
+  const ip = getClientIP(request);
+  const userAgent = request.headers.get("user-agent") || "";
+  const deviceFingerprint = generateDeviceFingerprint(request);
+  const tokens = generateTokenPair();
+  
+  const sessionId = crypto.randomUUID();
+  const now = Date.now();
+  
+  const session = {
+    sessionId,
+    userId,
+    accessToken: tokens.accessToken,
+    refreshToken: tokens.refreshToken,
+    createdAt: now,
+    lastAccessAt: now,
+    expiresAt: now + (SECURITY_CONFIG.REFRESH_TOKEN_TTL * 1000),
+    deviceInfo: {
+      userAgent,
+      ip,
+      fingerprint: deviceFingerprint,
+    },
+    isActive: true,
+  };
+  
+  // 单点登录：踢出旧会话
+  if (SECURITY_CONFIG.ENABLE_SSO) {
+    await revokeUserSessions(env, userId);
+  }
+  
+  // 存储会话
+  await env.SESSIONS.put(
+    `SESSION:${sessionId}`,
+    JSON.stringify(session),
+    { expirationTtl: SECURITY_CONFIG.REFRESH_TOKEN_TTL }
+  );
+  
+  // 存储 Access Token 映射
+  await env.SESSIONS.put(
+    `ACCESS_TOKEN:${tokens.accessToken}`,
+    sessionId,
+    { expirationTtl: SECURITY_CONFIG.ACCESS_TOKEN_TTL }
+  );
+  
+  // 存储 Refresh Token 映射
+  await env.SESSIONS.put(
+    `REFRESH_TOKEN:${tokens.refreshToken}`,
+    sessionId,
+    { expirationTtl: SECURITY_CONFIG.REFRESH_TOKEN_TTL }
+  );
+  
+  // 记录活跃会话
+  await env.SESSIONS.put(
+    `ACTIVE_SESSION:${userId}`,
+    sessionId,
+    { expirationTtl: SECURITY_CONFIG.REFRESH_TOKEN_TTL }
+  );
+  
+  return { session, tokens };
+}
+/**
+ * 验证 Access Token
+ */
+async function validateAccessToken(env, token) {
+  // 检查黑名单
+  const isBlacklisted = await env.SESSIONS.get(`BLACKLIST:${token}`);
+  if (isBlacklisted) {
+    return { valid: false, reason: "Token 已被撤销" };
+  }
+  
+  // 获取会话 ID
+  const sessionId = await env.SESSIONS.get(`ACCESS_TOKEN:${token}`);
+  if (!sessionId) {
+    return { valid: false, reason: "Token 无效或已过期" };
+  }
+  
+  // 获取会话信息
+  const sessionData = await env.SESSIONS.get(`SESSION:${sessionId}`, { type: "json" });
+  if (!sessionData || !sessionData.isActive) {
+    return { valid: false, reason: "会话已失效" };
+  }
+  
+  // 更新最后访问时间
+  sessionData.lastAccessAt = Date.now();
+  await env.SESSIONS.put(
+    `SESSION:${sessionId}`,
+    JSON.stringify(sessionData),
+    { expirationTtl: SECURITY_CONFIG.REFRESH_TOKEN_TTL }
+  );
+  
+  return { valid: true, session: sessionData };
+}
+/**
+ * 刷新 Token
+ */
+async function refreshAccessToken(env, refreshToken) {
+  const sessionId = await env.SESSIONS.get(`REFRESH_TOKEN:${refreshToken}`);
+  if (!sessionId) {
+    return { success: false, message: "Refresh Token 无效" };
+  }
+  
+  const sessionData = await env.SESSIONS.get(`SESSION:${sessionId}`, { type: "json" });
+  if (!sessionData || !sessionData.isActive) {
+    return { success: false, message: "会话已失效" };
+  }
+  
+  // 生成新的 Access Token
+  const newAccessToken = crypto.randomUUID();
+  sessionData.accessToken = newAccessToken;
+  sessionData.lastAccessAt = Date.now();
+  
+  // 更新会话
+  await env.SESSIONS.put(
+    `SESSION:${sessionId}`,
+    JSON.stringify(sessionData),
+    { expirationTtl: SECURITY_CONFIG.REFRESH_TOKEN_TTL }
+  );
+  
+  // 存储新的 Access Token 映射
+  await env.SESSIONS.put(
+    `ACCESS_TOKEN:${newAccessToken}`,
+    sessionId,
+    { expirationTtl: SECURITY_CONFIG.ACCESS_TOKEN_TTL }
+  );
+  
+  return { success: true, accessToken: newAccessToken };
+}
+/**
+ * 撤销用户所有会话
+ */
+async function revokeUserSessions(env, userId) {
+  const oldSessionId = await env.SESSIONS.get(`ACTIVE_SESSION:${userId}`);
+  if (oldSessionId) {
+    const oldSession = await env.SESSIONS.get(`SESSION:${oldSessionId}`, { type: "json" });
+    if (oldSession) {
+      // 将旧 Token 加入黑名单
+      await env.SESSIONS.put(
+        `BLACKLIST:${oldSession.accessToken}`,
+        "revoked",
+        { expirationTtl: SECURITY_CONFIG.ACCESS_TOKEN_TTL }
+      );
+      
+      // 标记会话为非活跃
+      oldSession.isActive = false;
+      await env.SESSIONS.put(
+        `SESSION:${oldSessionId}`,
+        JSON.stringify(oldSession),
+        { expirationTtl: 60 }
+      );
+    }
+  }
+}
+/**
+ * 登出
+ */
+async function logoutSession(env, accessToken) {
+  const sessionId = await env.SESSIONS.get(`ACCESS_TOKEN:${accessToken}`);
+  if (!sessionId) return;
+  
+  const sessionData = await env.SESSIONS.get(`SESSION:${sessionId}`, { type: "json" });
+  if (!sessionData) return;
+  
+  // 加入黑名单
+  await env.SESSIONS.put(
+    `BLACKLIST:${accessToken}`,
+    "revoked",
+    { expirationTtl: SECURITY_CONFIG.ACCESS_TOKEN_TTL }
+  );
+  
+  // 标记会话为非活跃
+  sessionData.isActive = false;
+  await env.SESSIONS.put(
+    `SESSION:${sessionId}`,
+    JSON.stringify(sessionData),
+    { expirationTtl: 60 }
+  );
+  
+  // 删除活跃会话记录
+  await env.SESSIONS.delete(`ACTIVE_SESSION:${sessionData.userId}`);
+}
+/**
+ * 记录登录日志
+ */
+async function logLoginAttempt(env, request, success, userId = "admin", reason = "") {
+  const ip = getClientIP(request);
+  const userAgent = request.headers.get("user-agent") || "";
+  const timestamp = Date.now();
+  
+  const log = {
+    timestamp,
+    userId,
+    ip,
+    userAgent,
+    success,
+    reason,
+  };
+  
+  const key = `LOGIN_LOG:${timestamp}:${crypto.randomUUID()}`;
+  await env.SESSIONS.put(key, JSON.stringify(log), {
+    expirationTtl: 30 * 24 * 60 * 60, // 保留30天
+  });
+}
 
 // =================================================================================
 // Authentication Middleware
@@ -371,17 +811,17 @@ async function requireAuth(request, env) {
   if (!raw || !raw.startsWith(AUTH_HEADER_PREFIX)) {
     return jsonResponse({ success: false, message: "请登录后再执行此操作。" }, 401);
   }
-
   const token = raw.slice(AUTH_HEADER_PREFIX.length).trim();
   if (!token) {
     return jsonResponse({ success: false, message: "请登录后再执行此操作。" }, 401);
   }
-
-  const session = await env.SESSIONS.get(token);
-  if (!session) {
-    return jsonResponse({ success: false, message: "登录状态已失效，请重新登录。" }, 401);
+  const validation = await validateAccessToken(env, token);
+  if (!validation.valid) {
+    return jsonResponse({ success: false, message: validation.reason }, 401);
   }
-  // The TTL is handled by KV, so if the session exists, it's valid.
+  
+  // 将会话信息附加到请求上下文
+  request.session = validation.session;
 }
 
 // =================================================================================
