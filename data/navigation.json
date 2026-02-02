@@ -347,6 +347,10 @@
     "stats": {
         "visitorCount": 0,
         "siteStartDate": "2025-12-25"
-    }
+    },
+    "admin": {
+        "passwordHash": "8175b7eb0a1015e47b040ef43d758212792ac8b0ec7d284f3c877b95d43c04dbecfe772d93e753de3f53bc63f53cc26d3d3f284231f7b3599883a222045b0372",
+        "passwordSalt": "3eca4b266a8532bf82992cc73ed64efc"
+  }
     
 }

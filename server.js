@@ -164,10 +164,15 @@ app.post("/api/login", async (req, res, next) => {
     }
 
     const fullData = await readFullData();
-    const admin = fullData.admin;
+    let admin = fullData.admin;
+
+    // 如果 admin 对象不存在或缺少密码信息，自动创建默认密码
     if (!admin || !admin.passwordSalt || !admin.passwordHash) {
-      res.status(500).json({ success: false, message: "登录功能暂不可用，请稍后再试。" });
-      return;
+      const defaultCredentials = createDefaultAdminCredentials();
+      admin = defaultCredentials;
+      // 将默认密码写入数据库
+      fullData.admin = admin;
+      await writeFullData(fullData, { mutated: true, passwordReset: true });
     }
 
     const hashed = hashPassword(password, admin.passwordSalt);
