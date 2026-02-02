@@ -164,9 +164,15 @@ async function handleLogin(request, env) {
   }
 
   const fullData = await readFullData(env);
-  const admin = fullData.admin;
+  let admin = fullData.admin;
+
+  // 如果 admin 对象不存在或缺少密码信息，自动创建默认密码
   if (!admin || !admin.passwordSalt || !admin.passwordHash) {
-    return jsonResponse({ success: false, message: "登录功能暂不可用，请稍后再试。" }, 500);
+    const defaultCredentials = await createDefaultAdminCredentials();
+    admin = defaultCredentials;
+    // 将默认密码写入 KV 数据库
+    fullData.admin = admin;
+    await writeFullData(env, fullData);
   }
 
   const isMatch = await verifyPassword(password, admin.passwordSalt, admin.passwordHash);
