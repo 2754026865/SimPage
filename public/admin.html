@@ -178,7 +178,6 @@
               />
             </div>
           </div>
-          <p class="password-hint">首次使用默认密码：admin123。修改密码后请妥善保存。</p>
           <p class="password-message" id="password-message" role="status" aria-live="polite" hidden></p>
           <div class="password-actions">
             <button type="submit" class="primary-button" id="password-submit">更新密码</button>
@@ -277,24 +276,5 @@
       </div>
     </div>
 
-    <div class="auth-overlay" id="auth-overlay">
-      <form class="auth-card glass" id="login-form" aria-labelledby="login-title">
-        <h2 id="login-title">后台登录</h2>
-        <p class="auth-description">请输入后台密码以继续。</p>
-        <p class="form-error" id="login-error" role="alert" hidden></p>
-        <div class="field">
-          <span>密码</span>
-          <input
-            type="password"
-            id="login-password"
-            autocomplete="current-password"
-            placeholder="请输入后台密码"
-            required
-          />
-        </div>
-        <button type="submit" class="primary-button">登录</button>
-        <p class="auth-hint">首次使用默认密码：admin123</p>
-      </form>
-    </div>
   </body>
 </html>

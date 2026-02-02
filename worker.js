@@ -50,11 +50,13 @@ router.get("/api/fetch-logo", requireAuth, handleFetchLogo);
 // Static Asset and Fallback Routes
 // =================================================================================
 
-router.get("/admin", (request, env, ctx) => serveStatic(request, env, ctx, "/admin.html"));
-// 🆕 将 /admin/ 重定向到 /admin（301 永久重定向）
-router.get("/admin/", () => {
-  return Response.redirect("/admin", 301);
-});
+// 登录页面路由
+router.get("/login", (request, env, ctx) => serveStatic(request, env, ctx, "/login.html"));
+router.get("/login/", () => Response.redirect("/login", 301));
+
+// 后台管理页面 - 需要验证 token
+router.get("/admin", handleAdminPage);
+router.get("/admin/", () => Response.redirect("/admin", 301));
 
 // Fallback for all other GET requests to serve static assets or index.html
 router.get("*", (request, env, ctx) => serveStatic(request, env, ctx));
@@ -155,6 +157,31 @@ async function serveStatic(request, env, ctx, forcePath) {
 // =================================================================================
 // API Handlers
 // =================================================================================
+
+/**
+ * 处理后台管理页面访问
+ * 验证 token 是否有效，未登录则重定向到登录页面
+ */
+async function handleAdminPage(request, env, ctx) {
+  const url = new URL(request.url);
+  const tokenFromUrl = url.searchParams.get("token");
+
+  if (tokenFromUrl) {
+    const session = await env.SESSIONS.get(tokenFromUrl);
+    if (session) {
+      return serveStatic(request, env, ctx, "/admin.html");
+    }
+  }
+
+  return new Response(getTokenCheckPage(), {
+    status: 200,
+    headers: { "Content-Type": "text/html;charset=UTF-8" },
+  });
+}
+
+function getTokenCheckPage() {
+  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>验证中...</title><style>body{display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff}.loading{text-align:center}.spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 1rem}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="loading"><div class="spinner"></div><p>正在验证登录状态...</p></div><script>!function(){var t="modern-navigation-admin-token",e=localStorage.getItem(t);if(!e)return void(window.location.replace("/login"));fetch("/api/admin/data",{headers:{Authorization:"Bearer "+e}}).then(function(n){n.ok?window.location.replace("/admin?token="+encodeURIComponent(e)):(localStorage.removeItem(t),window.location.replace("/login"))}).catch(function(){localStorage.removeItem(t),window.location.replace("/login")})}();</script></body></html>';
+}
 
 async function handleLogin(request, env) {
   const body = await request.json().catch(() => null);

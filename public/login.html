@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>登录</title>
+    <link rel="icon" id="site-favicon" href="/simpage-logo.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/styles.css" />
+    <style>
+      .login-body {
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 1rem;
+      }
+      .login-card {
+        width: 100%;
+        max-width: 400px;
+        padding: 2rem;
+        border-radius: 1rem;
+      }
+      .login-card h1 {
+        margin: 0 0 0.5rem;
+        font-size: 1.5rem;
+      }
+      .login-card .description {
+        margin: 0 0 1.5rem;
+        color: var(--text-secondary, #6b7280);
+        font-size: 0.875rem;
+      }
+      .login-card .field {
+        margin-bottom: 1rem;
+      }
+      .login-card .field span {
+        display: block;
+        margin-bottom: 0.5rem;
+        font-size: 0.875rem;
+        font-weight: 500;
+      }
+      .login-card input {
+        width: 100%;
+        padding: 0.75rem 1rem;
+        border: 1px solid var(--border-color, #e5e7eb);
+        border-radius: 0.5rem;
+        font-size: 1rem;
+        background: var(--input-bg, #fff);
+        transition: border-color 0.2s, box-shadow 0.2s;
+      }
+      .login-card input:focus {
+        outline: none;
+        border-color: var(--primary-color, #3b82f6);
+        box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+      }
+      .login-card button {
+        width: 100%;
+        margin-top: 0.5rem;
+      }
+      .login-error {
+        margin: 0 0 1rem;
+        padding: 0.75rem 1rem;
+        background: rgba(239, 68, 68, 0.1);
+        border: 1px solid rgba(239, 68, 68, 0.2);
+        border-radius: 0.5rem;
+        color: #dc2626;
+        font-size: 0.875rem;
+      }
+      .login-back {
+        display: block;
+        margin-top: 1.5rem;
+        text-align: center;
+        color: var(--text-secondary, #6b7280);
+        font-size: 0.875rem;
+        text-decoration: none;
+      }
+      .login-back:hover {
+        color: var(--primary-color, #3b82f6);
+      }
+    </style>
+  </head>
+  <body class="login-body">
+    <div class="ambient ambient-a" aria-hidden="true"></div>
+    <div class="ambient ambient-b" aria-hidden="true"></div>
+
+    <form class="login-card glass" id="login-form">
+      <h1>后台登录</h1>
+      <p class="description">请输入后台密码以继续访问管理面板。</p>
+      <p class="login-error" id="login-error" role="alert" hidden></p>
+      <div class="field">
+        <span>密码</span>
+        <input
+          type="password"
+          id="login-password"
+          autocomplete="current-password"
+          placeholder="请输入后台密码"
+          required
+          autofocus
+        />
+      </div>
+      <button type="submit" class="primary-button" id="login-submit">登录</button>
+      <a class="login-back" href="/">← 返回导航页</a>
+    </form>
+
+    <script>
+      const STORAGE_KEY = "modern-navigation-admin-token";
+      const LOGIN_ENDPOINT = "/api/login";
+
+      const form = document.getElementById("login-form");
+      const passwordInput = document.getElementById("login-password");
+      const errorEl = document.getElementById("login-error");
+      const submitBtn = document.getElementById("login-submit");
+
+      function showError(message) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      }
+
+      function hideError() {
+        errorEl.textContent = "";
+        errorEl.hidden = true;
+      }
+
+      async function handleSubmit(event) {
+        event.preventDefault();
+        hideError();
+
+        const password = passwordInput.value.trim();
+        if (!password) {
+          showError("请输入密码。");
+          passwordInput.focus();
+          return;
+        }
+
+        submitBtn.disabled = true;
+        passwordInput.disabled = true;
+        submitBtn.textContent = "登录中...";
+
+        try {
+          const response = await fetch(LOGIN_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password }),
+          });
+
+          const result = await response.json();
+
+          if (!response.ok || !result.success || !result.token) {
+            throw new Error(result.message || "登录失败");
+          }
+
+          // 保存 token 到 localStorage
+          localStorage.setItem(STORAGE_KEY, result.token);
+
+          // 跳转到后台页面
+          window.location.href = "/admin";
+        } catch (error) {
+          showError(error.message || "登录失败，请重试。");
+          passwordInput.focus();
+        } finally {
+          submitBtn.disabled = false;
+          passwordInput.disabled = false;
+          submitBtn.textContent = "登录";
+        }
+      }
+
+      // 检查是否已登录，如果有 token 直接跳转
+      const existingToken = localStorage.getItem(STORAGE_KEY);
+      if (existingToken) {
+        fetch("/api/admin/data", {
+          headers: { Authorization: "Bearer " + existingToken }
+        }).then(function(res) {
+          if (res.ok) {
+            window.location.href = "/admin";
+          } else {
+            localStorage.removeItem(STORAGE_KEY);
+          }
+        }).catch(function() {
+          localStorage.removeItem(STORAGE_KEY);
+        });
+      }
+
+      form.addEventListener("submit", handleSubmit);
+    </script>
+  </body>
+</html>

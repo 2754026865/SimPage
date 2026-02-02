@@ -41,10 +41,6 @@ const opacityValueDisplay = document.getElementById("opacity-value-display"); //
 const siteUseWallpaperInput = document.getElementById("site-use-wallpaper"); // 🆕 添加
 const siteWallpaperUrlInput = document.getElementById("site-wallpaper-url"); // 🆕 添加
 const categorySuggestions = document.getElementById("category-suggestions");
-const authOverlay = document.getElementById("auth-overlay");
-const loginForm = document.getElementById("login-form");
-const loginPasswordInput = document.getElementById("login-password");
-const loginError = document.getElementById("login-error");
 const logoutButton = document.getElementById("logout-button");
 const passwordForm = document.getElementById("password-form");
 const currentPasswordInput = document.getElementById("current-password");
@@ -79,7 +75,6 @@ function replaceChildrenSafe(target, ...nodes) {
 
 const STORAGE_KEY = "modern-navigation-admin-token";
 const DATA_ENDPOINT = "/api/admin/data";
-const LOGIN_ENDPOINT = "/api/login";
 const PASSWORD_ENDPOINT = "/api/admin/password";
 
 const defaultDocumentTitle = document.title || "导航后台编辑";
@@ -955,7 +950,6 @@ async function loadData(showStatus = true) {
     const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
 
     updateStateFromResponse(data);
-    hideAuthOverlay();
     if (logoutButton) logoutButton.disabled = false;
     if (showStatus) {
       setStatus("数据已加载。", "neutral");
@@ -1102,16 +1096,8 @@ function clearStoredToken() {
 function handleUnauthorized(message) {
   clearStoredToken();
   authToken = "";
-  state.apps = [];
-  state.bookmarks = [];
-  state.settings = normaliseSettingsIncoming(null);
-  applySettingsToInputs(state.settings);
-  render();
-  resetDirty();
-  showAuthOverlay();
-  setPasswordMessage("");
-  setStatus(message || "登录状态已失效，请重新登录。", "error");
-  if (logoutButton) logoutButton.disabled = true;
+  setStatus(message || "登录状态已失效，正在跳转到登录页...", "error");
+  window.location.replace("/login");
 }
 
 function handleLogout() {
@@ -1131,43 +1117,6 @@ function handleLogout() {
   window.location.replace("/");
 }
 
-function showAuthOverlay() {
-  if (!authOverlay) return;
-  authOverlay.hidden = false;
-  setLoginError("");
-  setPasswordMessage("");
-  if (loginPasswordInput) {
-    loginPasswordInput.disabled = false;
-    loginPasswordInput.value = "";
-    setTimeout(() => {
-      loginPasswordInput.focus();
-    }, 0);
-  }
-  if (logoutButton) logoutButton.disabled = true;
-}
-
-function hideAuthOverlay() {
-  if (!authOverlay) return;
-  authOverlay.hidden = true;
-  setLoginError("");
-  setPasswordMessage("");
-  if (loginPasswordInput) {
-    loginPasswordInput.value = "";
-    loginPasswordInput.disabled = false;
-  }
-}
-
-function setLoginError(message) {
-  if (!loginError) return;
-  if (message) {
-    loginError.textContent = message;
-    loginError.hidden = false;
-  } else {
-    loginError.textContent = "";
-    loginError.hidden = true;
-  }
-}
-
 function setPasswordMessage(message, variant = "neutral") {
   if (!passwordMessage) return;
   if (!message) {
@@ -1185,69 +1134,13 @@ function setPasswordMessage(message, variant = "neutral") {
   }
 }
 
-async function performLogin(password) {
-  const response = await fetch(LOGIN_ENDPOINT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password }),
-  });
-
-  if (!response.ok) {
-    const message = await extractErrorMessage(response);
-    throw new Error(message || "登录失败");
-  }
-
-  const result = await response.json();
-  if (!result || !result.success || !result.token) {
-    throw new Error(result?.message || "登录失败");
-  }
-
-  authToken = result.token;
-  saveToken(authToken);
-  const success = await loadData(false);
-  if (!success) {
-    throw new Error("数据加载失败，请重试。");
-  }
-  setStatus("登录成功，数据已加载。", "success");
-}
-
-async function handleLoginSubmit(event) {
-  event.preventDefault();
-  if (!loginPasswordInput) return;
-
-  const password = loginPasswordInput.value.trim();
-  if (!password) {
-    setLoginError("请输入密码。");
-    loginPasswordInput.focus();
-    return;
-  }
-
-  setLoginError("");
-  const submitButton = loginForm ? loginForm.querySelector('button[type="submit"]') : null;
-  if (submitButton) submitButton.disabled = true;
-  loginPasswordInput.disabled = true;
-
-  try {
-    await performLogin(password);
-    setPasswordMessage("");
-    loginPasswordInput.value = "";
-  } catch (error) {
-    console.error("登录失败", error);
-    setLoginError(error.message || "登录失败，请重试。");
-    loginPasswordInput.focus();
-  } finally {
-    if (submitButton) submitButton.disabled = false;
-    loginPasswordInput.disabled = false;
-  }
-}
-
 async function handlePasswordSubmit(event) {
   event.preventDefault();
   if (!passwordForm) return;
 
   if (!authToken) {
     setPasswordMessage("请登录后再修改密码。", "error");
-    showAuthOverlay();
+    window.location.replace("/login");
     return;
   }
 
@@ -1523,10 +1416,6 @@ function bindEvents() {
     });
   }
 
-  if (loginForm) {
-    loginForm.addEventListener("submit", handleLoginSubmit);
-  }
-
   if (logoutButton) {
     logoutButton.addEventListener("click", handleLogout);
   }
@@ -1599,19 +1488,24 @@ async function initialise() {
   applySettingsToInputs(state.settings);
   render();
   resetDirty();
+
   const storedToken = loadStoredToken();
-  if (storedToken) {
-    authToken = storedToken;
-    setStatus("正在验证登录状态...", "neutral");
-    const success = await loadData(false);
-    if (!success) {
-      showAuthOverlay();
-    } else {
-      setStatus("数据已加载。", "neutral");
-    }
+  if (!storedToken) {
+    // 没有 token，跳转到登录页
+    window.location.replace("/login");
+    return;
+  }
+
+  authToken = storedToken;
+  if (logoutButton) logoutButton.disabled = false;
+  setStatus("正在加载数据...", "neutral");
+
+  const success = await loadData(false);
+  if (!success) {
+    // token 无效，跳转到登录页
+    window.location.replace("/login");
   } else {
-    showAuthOverlay();
-    setStatus("请登录后开始编辑。", "neutral");
+    setStatus("数据已加载。", "neutral");
   }
 }
 
