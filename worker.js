@@ -15,7 +15,7 @@ const BASE_DEFAULT_SETTINGS = Object.freeze({
   siteLogo: "",
   greeting: "",
   footer: "",
-  glassOpacity: 40, // 🆕 添加默认透明度
+  glassOpacity: 40, // 🆕 添加默认透明�?
   useWallpaper: true, // 🆕 添加
   wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加默认壁纸 URL
 });
@@ -29,9 +29,11 @@ const DEFAULT_WEATHER_CONFIG = Object.freeze({
   city: "北京",
 });
 
-const DEFAULT_ADMIN_PASSWORD = "admin123";
 const SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours in seconds
 const AUTH_HEADER_PREFIX = "Bearer ";
+const SESSION_COOKIE_NAME = "simpage_session";
+const COOKIE_PATH = "/";
+const COOKIE_MAX_AGE = SESSION_TTL_SECONDS;
 
 // =================================================================================
 // API Routes
@@ -45,6 +47,7 @@ router.put("/api/admin/data", requireAuth, handleDataUpdate);
 router.put("/api/data", requireAuth, handleDataUpdate); // Legacy endpoint
 router.post("/api/admin/password", requireAuth, handlePasswordUpdate);
 router.get("/api/fetch-logo", requireAuth, handleFetchLogo);
+router.post("/api/logout", handleLogout);
 
 // =================================================================================
 // Static Asset and Fallback Routes
@@ -54,7 +57,7 @@ router.get("/api/fetch-logo", requireAuth, handleFetchLogo);
 router.get("/login", (request, env, ctx) => serveStatic(request, env, ctx, "/login.html"));
 router.get("/login/", () => Response.redirect("/login", 301));
 
-// 后台管理页面 - 需要验证 token
+// 后台管理页面 - 需要验�?token
 router.get("/admin", handleAdminPage);
 router.get("/admin/", () => Response.redirect("/admin", 301));
 
@@ -71,14 +74,11 @@ router.all("*", () => new Response("Not Found", { status: 404 }));
 export default {
   async fetch(request, env, ctx) {
     try {
+      globalThis.ctx = ctx;
       return await router.handle(request, env, ctx);
     } catch (error) {
       console.error("Unhandled error:", error);
-      const errorResponse = {
-        success: false,
-        message: error.message,
-        stack: error.stack,
-      };
+      const errorResponse = buildErrorResponse(error, env);
       return new Response(JSON.stringify(errorResponse, null, 2), {
         status: 500,
         headers: { "Content-Type": "application/json;charset=UTF-8" },
@@ -163,25 +163,17 @@ async function serveStatic(request, env, ctx, forcePath) {
  * 验证 token 是否有效，未登录则重定向到登录页面
  */
 async function handleAdminPage(request, env, ctx) {
-  const url = new URL(request.url);
-  const tokenFromUrl = url.searchParams.get("token");
-
-  if (tokenFromUrl) {
-    const session = await env.SESSIONS.get(tokenFromUrl);
+  const token = getSessionTokenFromRequest(request);
+  if (token) {
+    const session = await env.SESSIONS.get(token);
     if (session) {
       return serveStatic(request, env, ctx, "/admin.html");
     }
   }
-
-  return new Response(getTokenCheckPage(), {
-    status: 200,
-    headers: { "Content-Type": "text/html;charset=UTF-8" },
-  });
+  return Response.redirect("/login", 302);
 }
 
-function getTokenCheckPage() {
-  return '<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>验证中...</title><style>body{display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);color:#fff}.loading{text-align:center}.spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,0.3);border-top-color:#fff;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 1rem}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="loading"><div class="spinner"></div><p>正在验证登录状态...</p></div><script>!function(){var t="modern-navigation-admin-token",e=localStorage.getItem(t);if(!e)return void(window.location.replace("/login"));fetch("/api/admin/data",{headers:{Authorization:"Bearer "+e}}).then(function(n){n.ok?window.location.replace("/admin?token="+encodeURIComponent(e)):(localStorage.removeItem(t),window.location.replace("/login"))}).catch(function(){localStorage.removeItem(t),window.location.replace("/login")})}();</script></body></html>';
-}
+
 
 async function handleLogin(request, env) {
   const body = await request.json().catch(() => null);
@@ -193,11 +185,12 @@ async function handleLogin(request, env) {
   const fullData = await readFullData(env);
   let admin = fullData.admin;
 
-  // 如果 admin 对象不存在或缺少密码信息，自动创建默认密码
   if (!admin || !admin.passwordSalt || !admin.passwordHash) {
-    const defaultCredentials = await createDefaultAdminCredentials();
-    admin = defaultCredentials;
-    // 将默认密码写入 KV 数据库
+    const bootstrapPassword = resolveBootstrapPassword(env);
+    if (!bootstrapPassword) {
+      return jsonResponse({ success: false, message: "��̨��ʼ����δ���á�" }, 503);
+    }
+    admin = await createAdminCredentialsFromPassword(bootstrapPassword);
     fullData.admin = admin;
     await writeFullData(env, fullData);
   }
@@ -210,31 +203,26 @@ async function handleLogin(request, env) {
   const token = generateToken();
   await env.SESSIONS.put(token, "active", { expirationTtl: SESSION_TTL_SECONDS });
 
-  return jsonResponse({ success: true, token });
+  const response = jsonResponse({ success: true });
+  response.headers.set("Set-Cookie", buildSessionCookie(token));
+  return response;
 }
 
-async function handleGetData(request, env) {
+async function handleGetData(request, env, ctx) {
   try {
-    const data = await incrementVisitorCountAndReadData(env);
+    const data = await incrementVisitorCountAndReadData(env, ctx);
     return jsonResponse(data);
   } catch (error) {
     console.error("Error in handleGetData:", error);
-    return jsonResponse(
-      {
-        success: false,
-        message: `Error fetching data: ${error.message}`,
-        stack: error.stack,
-      },
-      500
-    );
+    return jsonResponse(buildErrorResponse(error, env, "Error fetching data"), 500);
   }
 }
-
-
 async function handleGetWeather(request, env, ctx) {
   try {
     const fullData = await readFullData(env);
-    const weatherSettings = normaliseWeatherSettingsValue(fullData.settings?.weather);
+    const weatherSettings = normaliseWeatherSettingsValue(
+      fullData.settings?.weather ?? fullData.settings?.weatherLocation
+    );
     let cities = weatherSettings.city;
     if (!Array.isArray(cities) || cities.length === 0) {
       cities = [DEFAULT_WEATHER_CONFIG.city];
@@ -268,7 +256,9 @@ async function handleGetWeather(request, env, ctx) {
 async function handleGetAdminData(request, env) {
   const fullData = await readFullData(env);
   const data = sanitiseData(fullData);
-  const weather = normaliseWeatherSettingsValue(fullData.settings?.weather);
+  const weather = normaliseWeatherSettingsValue(
+    fullData.settings?.weather ?? fullData.settings?.weatherLocation
+  );
   const cityString = Array.isArray(weather.city) ? weather.city.join(" ") : weather.city;
   data.settings.weather = { city: cityString };
   return jsonResponse({ success: true, data });
@@ -353,10 +343,10 @@ function calculateRunningDays(startDate) {
     const start = new Date(startDate);
     const now = new Date();
     
-    // 验证日期有效性
+    // 验证日期有效�?
     if (isNaN(start.getTime())) return 0;
     
-    // 计算天数差
+    // 计算天数�?
     const diffTime = now - start;
     const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
     
@@ -379,7 +369,7 @@ function handleFetchLogo(request, env) {
 
     // 移除协议 (http, https)
     let domain = targetUrl.trim().replace(/^(https?:\/\/)?/, "");
-    // 移除第一个斜杠后的所有内容 (路径, 查询参数, 哈希)
+    // 移除第一个斜杠后的所有内�?(路径, 查询参数, 哈希)
     domain = domain.split("/")[0];
 
     if (!domain) {
@@ -390,9 +380,18 @@ function handleFetchLogo(request, env) {
     return jsonResponse({ success: true, logoUrl: logoUrl });
 
   } catch (error) {
-    console.error("生成 Logo 链接时发生内部错误:", error);
+    console.error("生成 Logo 链接时发生内部错�?", error);
     return jsonResponse({ success: false, message: "生成 Logo 链接失败" }, 500);
   }
+}
+async function handleLogout(request, env) {
+  const token = getSessionTokenFromRequest(request);
+  if (token) {
+    await env.SESSIONS.delete(token);
+  }
+  const response = jsonResponse({ success: true });
+  response.headers.set("Set-Cookie", buildClearSessionCookie());
+  return response;
 }
 
 // =================================================================================
@@ -400,14 +399,9 @@ function handleFetchLogo(request, env) {
 // =================================================================================
 
 async function requireAuth(request, env) {
-  const raw = request.headers.get("authorization");
-  if (!raw || !raw.startsWith(AUTH_HEADER_PREFIX)) {
-    return jsonResponse({ success: false, message: "请登录后再执行此操作。" }, 401);
-  }
-
-  const token = raw.slice(AUTH_HEADER_PREFIX.length).trim();
+    const token = getSessionTokenFromRequest(request);
   if (!token) {
-    return jsonResponse({ success: false, message: "请登录后再执行此操作。" }, 401);
+    return jsonResponse({ success: false, message: "���¼����ִ�д˲�����" }, 401);
   }
 
   const session = await env.SESSIONS.get(token);
@@ -426,11 +420,18 @@ const DATA_KEY = "data";
 async function readFullData(env) {
   const raw = await env.SIMPAGE_DATA.get(DATA_KEY);
   if (!raw) {
-    const defaultData = await createDefaultData();
+    const defaultData = await createDefaultData(env);
     await writeFullData(env, defaultData);
     return defaultData;
   }
   const parsed = JSON.parse(raw);
+  if (!parsed.admin || !parsed.admin.passwordHash || !parsed.admin.passwordSalt) {
+    const bootstrapPassword = resolveBootstrapPassword(env);
+    if (bootstrapPassword) {
+      parsed.admin = await createAdminCredentialsFromPassword(bootstrapPassword);
+      await writeFullData(env, parsed);
+    }
+  }
   // Basic validation/normalization can be added here if needed
   return parsed;
 }
@@ -439,7 +440,7 @@ async function writeFullData(env, fullData) {
   await env.SIMPAGE_DATA.put(DATA_KEY, JSON.stringify(fullData, null, 2));
 }
 
-async function incrementVisitorCountAndReadData(env) {
+async function incrementVisitorCountAndReadData(env, ctx) {
   const fullData = await readFullData(env);
   const sanitised = sanitiseData(fullData);
 
@@ -454,9 +455,9 @@ async function incrementVisitorCountAndReadData(env) {
 
   // Fire-and-forget the write operation
   // This makes the user-facing request faster as it doesn't wait for the KV write.
-  const promise = writeFullData(env, updatedData);
-  if (globalThis.ctx && typeof globalThis.ctx.waitUntil === "function") {
-    globalThis.ctx.waitUntil(promise);
+    const promise = writeFullData(env, updatedData);
+  if (ctx && typeof ctx.waitUntil === "function") {
+    ctx.waitUntil(promise);
   }
 
   return sanitised;
@@ -469,9 +470,11 @@ async function incrementVisitorCountAndReadData(env) {
 function sanitiseData(fullData) {
   const defaults = createDefaultSettings();
   const sourceSettings = fullData.settings || defaults;
-  const weather = normaliseWeatherSettingsValue(sourceSettings.weather);
+  const weather = normaliseWeatherSettingsValue(
+    sourceSettings.weather ?? sourceSettings.weatherLocation
+  );
 
-  // 🆕 处理透明度
+  // 🆕 处理透明�?
   let glassOpacity = 40;
   if (typeof sourceSettings.glassOpacity === "number") {
     glassOpacity = Math.max(0, Math.min(100, Math.round(sourceSettings.glassOpacity)));
@@ -522,7 +525,7 @@ function normaliseSettingsInput(input) {
   const siteName = typeof input?.siteName === "string" ? input.siteName.trim() : "";
   if (!siteName) throw new Error("网站名称不能为空。");
 
-  // 🆕 处理透明度
+  // 🆕 处理透明�?
   let glassOpacity = 40;
   if (typeof input?.glassOpacity === "number") {
     glassOpacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
@@ -595,18 +598,24 @@ function normaliseFooterValue(value) {
 
 function normaliseWeatherSettingsValue(input) {
   const fallback = createDefaultWeatherSettings();
-  let value = { ...fallback };
-  if (input && typeof input === "object") {
-    if (typeof input.city === "string" && input.city.trim()) {
-      value.city = input.city.trim().split(/\s+/).filter(Boolean);
-    } else if (Array.isArray(input.city)) {
-      value.city = input.city.map(c => String(c).trim()).filter(Boolean);
+  let cities = [];
+  if (typeof input === "string") {
+    cities = input.trim().split(/\s+/).filter(Boolean);
+  } else if (Array.isArray(input)) {
+    cities = input.map((c) => String(c).trim()).filter(Boolean);
+  } else if (input && typeof input === "object") {
+    const citySource =
+      typeof input.city !== "undefined" ? input.city : input.weatherLocation;
+    if (typeof citySource === "string") {
+      cities = citySource.trim().split(/\s+/).filter(Boolean);
+    } else if (Array.isArray(citySource)) {
+      cities = citySource.map((c) => String(c).trim()).filter(Boolean);
     }
   }
-  if (!value.city || value.city.length === 0) {
-    value.city = fallback.city;
+  if (!cities.length) {
+    cities = fallback.city;
   }
-  return value;
+  return { city: cities };
 }
 
 function normaliseWeatherSettingsInput(rawWeather) {
@@ -639,8 +648,8 @@ function createDefaultWeatherSettings() {
   return { city: [DEFAULT_WEATHER_CONFIG.city] };
 }
 
-async function createDefaultData() {
-  const admin = await createDefaultAdminCredentials();
+async function createDefaultData(env) {
+  const admin = await resolveInitialAdmin(env);
   // Hardcode the full initial data to ensure KV is populated correctly on first run,
   // but dynamically generate the admin credentials.
   return {
@@ -744,9 +753,7 @@ async function verifyPassword(password, saltHex, expectedHashHex) {
   return timingSafeEqual(expectedHashHex, actualHashHex);
 }
 
-async function createDefaultAdminCredentials() {
-  return await hashPassword(DEFAULT_ADMIN_PASSWORD);
-}
+
 
 // =================================================================================
 // Weather API Fetcher
@@ -831,7 +838,7 @@ async function geocodeCity(cityName, env, ctx) {
       const payload = await fetchAndCache(url, ctx);
 
       if (!payload?.results?.[0]) {
-        throw createWeatherError(`未找到城市"${cityName}"的地理位置信息。`, 404);
+        throw createWeatherError(`未找到城�?${cityName}"的地理位置信息。`, 404);
       }
       const { latitude, longitude, name } = payload.results[0];
       if (typeof latitude !== "number" || typeof longitude !== "number") {
@@ -905,6 +912,71 @@ function jsonResponse(data, status = 200) {
     status,
     headers: { "Content-Type": "application/json;charset=UTF-8" },
   });
+}
+function isProduction(env) {
+  const mode = typeof env?.ENVIRONMENT === "string" ? env.ENVIRONMENT : env?.NODE_ENV;
+  return typeof mode === "string" && mode.toLowerCase() === "production";
+}
+
+function buildErrorResponse(error, env, fallbackMessage) {
+  const message =
+    typeof error?.message === "string" && error.message.trim()
+      ? error.message
+      : fallbackMessage || "Server error";
+  const payload = { success: false, message };
+  if (!isProduction(env) && error?.stack) {
+    payload.stack = error.stack;
+  }
+  return payload;
+}
+
+function parseCookies(request) {
+  const cookieHeader = request.headers.get("Cookie") || "";
+  const pairs = cookieHeader.split(";").map((part) => part.trim()).filter(Boolean);
+  const cookies = {};
+  for (const pair of pairs) {
+    const index = pair.indexOf("=");
+    if (index <= 0) continue;
+    const key = pair.slice(0, index).trim();
+    const value = pair.slice(index + 1).trim();
+    cookies[key] = value;
+  }
+  return cookies;
+}
+
+function getSessionTokenFromRequest(request) {
+  const rawAuth = request.headers.get("authorization");
+  if (rawAuth && rawAuth.startsWith(AUTH_HEADER_PREFIX)) {
+    const token = rawAuth.slice(AUTH_HEADER_PREFIX.length).trim();
+    if (token) {
+      return token;
+    }
+  }
+  const cookies = parseCookies(request);
+  return cookies[SESSION_COOKIE_NAME] || "";
+}
+
+function buildSessionCookie(token) {
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${token}`,
+    `Path=${COOKIE_PATH}`,
+    "HttpOnly",
+    "SameSite=Strict",
+    `Max-Age=${COOKIE_MAX_AGE}`,
+    "Secure",
+  ];
+  return parts.join("; ");
+}
+
+function buildClearSessionCookie() {
+  return [
+    `${SESSION_COOKIE_NAME}=`,
+    `Path=${COOKIE_PATH}`,
+    "HttpOnly",
+    "SameSite=Strict",
+    "Max-Age=0",
+    "Secure",
+  ].join("; ");
 }
 
 function bufferToHex(buffer) {

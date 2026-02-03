@@ -102,84 +102,75 @@
     </form>
 
     <script>
-      const STORAGE_KEY = "modern-navigation-admin-token";
-      const LOGIN_ENDPOINT = "/api/login";
+  const LOGIN_ENDPOINT = "/api/login";
 
-      const form = document.getElementById("login-form");
-      const passwordInput = document.getElementById("login-password");
-      const errorEl = document.getElementById("login-error");
-      const submitBtn = document.getElementById("login-submit");
+  const form = document.getElementById("login-form");
+  const passwordInput = document.getElementById("login-password");
+  const errorEl = document.getElementById("login-error");
+  const submitBtn = document.getElementById("login-submit");
 
-      function showError(message) {
-        errorEl.textContent = message;
-        errorEl.hidden = false;
-      }
+  function showError(message) {
+    errorEl.textContent = message;
+    errorEl.hidden = false;
+  }
 
-      function hideError() {
-        errorEl.textContent = "";
-        errorEl.hidden = true;
-      }
+  function hideError() {
+    errorEl.textContent = "";
+    errorEl.hidden = true;
+  }
 
-      async function handleSubmit(event) {
-        event.preventDefault();
-        hideError();
+  async function handleSubmit(event) {
+    event.preventDefault();
+    hideError();
 
-        const password = passwordInput.value.trim();
-        if (!password) {
+    const password = passwordInput.value.trim();
+    if (!password) {
           showError("请输入密码。");
-          passwordInput.focus();
-          return;
-        }
+      passwordInput.focus();
+      return;
+    }
 
-        submitBtn.disabled = true;
-        passwordInput.disabled = true;
+    submitBtn.disabled = true;
+    passwordInput.disabled = true;
         submitBtn.textContent = "登录中...";
 
-        try {
-          const response = await fetch(LOGIN_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password }),
-          });
+    try {
+      const response = await fetch(LOGIN_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password }),
+      });
 
-          const result = await response.json();
+      const result = await response.json().catch(() => ({}));
 
-          if (!response.ok || !result.success || !result.token) {
-            throw new Error(result.message || "登录失败");
-          }
+      if (!response.ok || !result.success) {
+        throw new Error(result.message || "登录失败");
+      }
 
-          // 保存 token 到 localStorage
-          localStorage.setItem(STORAGE_KEY, result.token);
-
-          // 跳转到后台页面
-          window.location.href = "/admin";
-        } catch (error) {
+      window.location.href = "/admin";
+    } catch (error) {
           showError(error.message || "登录失败，请重试。");
-          passwordInput.focus();
-        } finally {
-          submitBtn.disabled = false;
-          passwordInput.disabled = false;
+      passwordInput.focus();
+    } finally {
+      submitBtn.disabled = false;
+      passwordInput.disabled = false;
           submitBtn.textContent = "登录";
-        }
-      }
+    }
+  }
 
-      // 检查是否已登录，如果有 token 直接跳转
-      const existingToken = localStorage.getItem(STORAGE_KEY);
-      if (existingToken) {
-        fetch("/api/admin/data", {
-          headers: { Authorization: "Bearer " + existingToken }
-        }).then(function(res) {
-          if (res.ok) {
-            window.location.href = "/admin";
-          } else {
-            localStorage.removeItem(STORAGE_KEY);
-          }
-        }).catch(function() {
-          localStorage.removeItem(STORAGE_KEY);
-        });
+  async function checkExistingSession() {
+    try {
+      const response = await fetch("/api/admin/data", { cache: "no-store" });
+      if (response.ok) {
+        window.location.replace("/admin");
       }
+    } catch (_error) {
+      // ignore
+    }
+  }
 
-      form.addEventListener("submit", handleSubmit);
-    </script>
+  form.addEventListener("submit", handleSubmit);
+  checkExistingSession();
+</script>
   </body>
 </html>

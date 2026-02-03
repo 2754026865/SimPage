@@ -36,10 +36,11 @@ const DEFAULT_WEATHER_CONFIG = Object.freeze({
   city: "北京",
 });
 
-const DEFAULT_ADMIN_PASSWORD = "admin123";
 const SESSION_TTL = 12 * 60 * 60 * 1000; // 12 小时
 const CLEANUP_INTERVAL = 60 * 60 * 1000;
 const AUTH_HEADER_PREFIX = "Bearer ";
+const SESSION_COOKIE_NAME = "simpage_session";
+const COOKIE_PATH = "/";
 
 const activeSessions = new Map();
 
@@ -166,13 +167,16 @@ app.post("/api/login", async (req, res, next) => {
     const fullData = await readFullData();
     let admin = fullData.admin;
 
-    // 如果 admin 对象不存在或缺少密码信息，自动创建默认密码
+    // 如果 admin 对象不存在或缺少密码信息，自动创建默认密�?
     if (!admin || !admin.passwordSalt || !admin.passwordHash) {
-      const defaultCredentials = createDefaultAdminCredentials();
-      admin = defaultCredentials;
-      // 将默认密码写入数据库
+      const bootstrapPassword = resolveBootstrapPassword();
+      if (!bootstrapPassword) {
+        res.status(503).json({ success: false, message: "��̨��ʼ����δ���á�" });
+        return;
+      }
+      admin = createAdminCredentialsFromPassword(bootstrapPassword);
       fullData.admin = admin;
-      await writeFullData(fullData, { mutated: true, passwordReset: true });
+      await writeFullData(fullData, { mutated: true, passwordReset: false });
     }
 
     const hashed = hashPassword(password, admin.passwordSalt);
@@ -189,10 +193,19 @@ app.post("/api/login", async (req, res, next) => {
 
     const token = createAuthToken();
     activeSessions.set(token, { createdAt: Date.now() });
-    res.json({ success: true, token });
+    setSessionCookie(res, token, req);
+    res.json({ success: true });
   } catch (error) {
     next(error);
   }
+});
+app.post("/api/logout", (req, res) => {
+  const token = extractToken(req);
+  if (token) {
+    activeSessions.delete(token);
+  }
+  clearSessionCookie(res, req);
+  res.json({ success: true });
 });
 
 app.get("/api/data", async (_req, res, next) => {
@@ -271,7 +284,7 @@ app.get("/api/fetch-logo", requireAuth, (req, res) => {
     res.json({ success: true, logoUrl: logoUrl });
 
   } catch (error) {
-    console.error("生成 Logo 链接时发生内部错误:", error);
+    console.error("生成 Logo 链接时发生内部错�?", error);
     res.status(500).json({ success: false, message: "生成 Logo 链接失败" });
   }
 });
@@ -321,17 +334,12 @@ async function ensureDataFile() {
     await fs.access(DATA_FILE);
   } catch (_error) {
     const initialData = createDefaultData();
-    await writeFullData(initialData, { mutated: true, passwordReset: true });
+    await writeFullData(initialData, { mutated: true, passwordReset: false });
     created = true;
   }
 
-  if (created) {
-    announceDefaultPassword("已创建默认数据文件，后台初始密码：admin123");
-  } else {
-    const { passwordReset } = await normaliseExistingFile();
-    if (passwordReset) {
-      announceDefaultPassword("检测到缺失的后台密码，已重置为默认密码：admin123");
-    }
+  if (!created) {
+    await normaliseExistingFile();
   }
 }
 
@@ -343,8 +351,8 @@ async function normaliseExistingFile() {
       parsed = JSON.parse(raw);
     } catch (_error) {
       const defaultData = createDefaultData();
-      await writeFullData(defaultData, { mutated: true, passwordReset: true });
-      return { passwordReset: true };
+      await writeFullData(defaultData, { mutated: true, passwordReset: false });
+      return { passwordReset: false };
     }
 
     const { fullData, mutated, passwordReset } = normaliseFullData(parsed);
@@ -364,8 +372,8 @@ async function normaliseExistingFile() {
   } catch (error) {
     console.error("读取数据文件失败，将尝试恢复默认数据", error);
     const defaultData = createDefaultData();
-    await writeFullData(defaultData, { mutated: true, passwordReset: true });
-    return { passwordReset: true };
+    await writeFullData(defaultData, { mutated: true, passwordReset: false });
+    return { passwordReset: false };
   }
 }
 
@@ -454,8 +462,7 @@ async function readFullData() {
       } catch (error) {
         console.error("数据文件损坏，将重置为默认数据", error);
         const defaultData = createDefaultData();
-        await writeFullData(defaultData, { mutated: true, passwordReset: true });
-        announceDefaultPassword("数据文件已重置为默认，后台密码已重置为：admin123");
+        await writeFullData(defaultData, { mutated: true, passwordReset: false });
         return defaultData;
       }
 
@@ -474,7 +481,6 @@ async function readFullData() {
       }
 
       if (passwordReset) {
-        announceDefaultPassword("后台密码缺失或无效，已重置为默认密码：admin123");
       }
 
       return fullData;
@@ -550,8 +556,7 @@ function normaliseAdminFromFile(rawAdmin) {
     return { value: { passwordHash: rawAdmin.passwordHash, passwordSalt: rawAdmin.passwordSalt }, mutated: false, passwordReset: false };
   }
 
-  const credentials = createDefaultAdminCredentials();
-  return { value: credentials, mutated: true, passwordReset: true };
+  return { value: null, mutated: true, passwordReset: false };
 }
 
 function normaliseStatsFromFile(rawStats) {
@@ -829,7 +834,7 @@ function sanitiseData(fullData) {
       wallpaperUrl = trimmed;
     }
   }
-  // ⚠️ 关键修复：添加这两行！
+  // ⚠️ 关键修复：添加这两行�?
   const siteStartDate = fullData.stats?.siteStartDate || null;
   const runningDays = calculateRunningDays(siteStartDate);
 
@@ -1189,7 +1194,7 @@ async function geocodeCity(cityName) {
       }
 
       if (!payload.results || !Array.isArray(payload.results) || payload.results.length === 0) {
-        throw createWeatherError(`未找到城市"${city}"的地理位置信息，请检查城市名称。`, 404);
+        throw createWeatherError(`未找到城�?${city}"的地理位置信息，请检查城市名称。`, 404);
       }
 
       const result = payload.results[0];
@@ -1423,7 +1428,7 @@ async function resolveWeatherRequestConfig() {
 }
 
 function createDefaultData() {
-  const admin = createDefaultAdminCredentials();
+  const admin = resolveInitialAdmin();
   return {
     settings: createDefaultSettings(),
     stats: { ...DEFAULT_STATS },
@@ -1510,10 +1515,26 @@ function createDefaultData() {
   };
 }
 
-function createDefaultAdminCredentials() {
+function resolveBootstrapPassword() {
+  const raw = process.env.ADMIN_PASSWORD;
+  if (typeof raw !== "string") {
+    return "";
+  }
+  return raw.trim();
+}
+
+function createAdminCredentialsFromPassword(password) {
   const passwordSalt = generateSalt();
-  const passwordHash = hashPassword(DEFAULT_ADMIN_PASSWORD, passwordSalt);
+  const passwordHash = hashPassword(password, passwordSalt);
   return { passwordHash, passwordSalt };
+}
+
+function resolveInitialAdmin() {
+  const bootstrapPassword = resolveBootstrapPassword();
+  if (!bootstrapPassword) {
+    return null;
+  }
+  return createAdminCredentialsFromPassword(bootstrapPassword);
 }
 
 function hashPassword(password, salt) {
@@ -1528,16 +1549,54 @@ function createAuthToken() {
   return randomUUID();
 }
 
+function parseCookies(header) {
+  if (!header || typeof header !== "string") {
+    return {};
+  }
+  const pairs = header.split(";").map((part) => part.trim()).filter(Boolean);
+  const cookies = {};
+  for (const pair of pairs) {
+    const index = pair.indexOf("=");
+    if (index <= 0) continue;
+    const key = pair.slice(0, index).trim();
+    const value = pair.slice(index + 1).trim();
+    cookies[key] = value;
+  }
+  return cookies;
+}
+
+function setSessionCookie(res, token, req) {
+  const isSecure = Boolean(req.secure || req.headers["x-forwarded-proto"] === "https");
+  res.cookie(SESSION_COOKIE_NAME, token, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: isSecure,
+    maxAge: SESSION_TTL,
+    path: COOKIE_PATH,
+  });
+}
+
+function clearSessionCookie(res, req) {
+  const isSecure = Boolean(req.secure || req.headers["x-forwarded-proto"] === "https");
+  res.clearCookie(SESSION_COOKIE_NAME, {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: isSecure,
+    path: COOKIE_PATH,
+  });
+}
+
 function extractToken(req) {
   const raw = req.get("authorization") || req.get("Authorization");
-  if (!raw || typeof raw !== "string") {
-    return null;
-  }
-  if (!raw.startsWith(AUTH_HEADER_PREFIX)) {
-    return null;
-  }
-  const token = raw.slice(AUTH_HEADER_PREFIX.length).trim();
-  return token || null;
+  if (raw && typeof raw === "string" && raw.startsWith(AUTH_HEADER_PREFIX)) {
+    const token = raw.slice(AUTH_HEADER_PREFIX.length).trim();
+    if (token) {
+      return token;
+    }
+}
+  const cookieHeader = req.headers?.cookie || "";
+  const cookies = parseCookies(cookieHeader);
+  return cookies[SESSION_COOKIE_NAME] || null;
 }
 
 function requireAuth(req, res, next) {

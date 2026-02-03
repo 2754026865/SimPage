@@ -7,13 +7,12 @@
     <link rel="icon" id="site-favicon" href="/simpage-logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/scripts/main.js" defer></script>
-    <script type="module" src="/scripts/lunar.js"></script>
   </head>
   <body>
      <!-- 🆕 添加壁纸容器 -->
     <div class="wallpaper-container" id="wallpaper-container"></div>
     <!-- 🆕 迷你浮动卡片（使用占位符，由 JS 动态更新） -->
-  <div class="floating-summary" id="floating-summary">
+  <div class="floating-summary" id="floating-summary" role="button" tabindex="0" aria-label="Back to top">
     <!-- 紧凑模式（默认显示） -->
     <div class="floating-compact">
       <span class="compact-badge" id="compact-badge">--</span>

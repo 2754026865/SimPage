@@ -57,29 +57,6 @@ const collectionPanels = {
 };
 
 
-/**
- * 🆕 计算网站运行天数
- */
-function calculateRunningDays(startDate) {
-  if (!startDate) return 0;
-  
-  try {
-    const start = new Date(startDate);
-    const now = new Date();
-    
-    // 验证日期有效性
-    if (isNaN(start.getTime())) return 0;
-    
-    // 计算天数差
-    const diffTime = now - start;
-    const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
-    
-    return Math.max(0, diffDays);
-  } catch (error) {
-    console.error("计算运行天数失败:", error);
-    return 0;
-  }
-}
 
 
 function replaceChildrenSafe(target, ...nodes) {
@@ -107,7 +84,7 @@ const DEFAULT_SITE_SETTINGS = {
   greeting: "",
   footer: "",
   weather: { ...defaultWeather },
-  glassOpacity: 40, // 🆕 添加默认透明度
+  glassOpacity: 40, // 🆕 添加默认透明�?
   useWallpaper: true, // 🆕 添加
   wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
 };
@@ -216,7 +193,7 @@ function moveSearchEngineSelection(offset) {
 }
 
 /**
- * 🆕 根据时间获取动态标签
+ * 🆕 根据时间获取动态标�?
  */
 function getDynamicBadge(hour) {
   if (hour >= 5 && hour < 9) {
@@ -233,7 +210,7 @@ function getDynamicBadge(hour) {
 }
 
 /**
- * 🆕 计算本年第几周
+ * 🆕 计算本年第几�?
  */
 function getWeekNumber(date) {
   const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
@@ -253,7 +230,7 @@ function getTodayProgress() {
 }
 
 /**
- * 🆕 渲染进度条
+ * 🆕 渲染进度�?
  */
 function renderProgressBar(progress) {
   const totalBlocks = 10;
@@ -283,7 +260,7 @@ function throttle(func, delay) {
 /**
  * 🆕 处理浮动卡片显示/隐藏
  */
-const FLOATING_THRESHOLD = 300; // 滚动300px后显示
+const FLOATING_THRESHOLD = 300; // 滚动300px后显�?
 
 function handleFloatingVisibility() {
   if (!floatingCard) return;
@@ -324,7 +301,7 @@ function updateFloatingCard() {
   const now = new Date();
   const hour = now.getHours();
   
-  // 获取动态数据
+  // 获取动态数�?
   const badge = getDynamicBadge(hour);
   const time = timeFormatter.format(now);
   const timeShort = time.substring(0, 5); // 只取 HH:MM
@@ -363,7 +340,7 @@ function updateFloatingCard() {
   }
   
   if (expandedLunar) {
-    expandedLunar.textContent = `${lunar} · 第${weekNum}周`;
+    expandedLunar.textContent = `${lunar} · �?{weekNum}周`;
   }
   
   if (expandedProgressFull) {
@@ -390,16 +367,16 @@ function updateClock() {
     dateElement.textContent = dateFormatter.format(now);
   }
   
-  // 🆕 更新动态标签
+  // 🆕 更新动态标�?
   if (dynamicBadgeElement) {
     dynamicBadgeElement.textContent = getDynamicBadge(hour);
   }
   
-  // 🆕 更新农历和周数
+  // 🆕 更新农历和周�?
   if (lunarDateElement) {
     const lunar = formatLunar(now);
     const weekNum = getWeekNumber(now);
-    lunarDateElement.textContent = `${lunar} · 第${weekNum}周`;
+    lunarDateElement.textContent = `${lunar} · �?{weekNum}周`;
   }
   
   // 🆕 更新今日进度
@@ -411,7 +388,7 @@ function updateClock() {
   // 更新问候语
   updateGreetingDisplay(hour);
 
-  // 🆕 更新浮动卡片（关键！）
+  // 🆕 更新浮动卡片（关键！�?
   updateFloatingCard();
 }
 
@@ -507,7 +484,7 @@ function prepareSiteSettings(settings) {
   if (typeof settings.footer === "string") {
     prepared.footer = normaliseFooterValue(settings.footer);
   }
-  // 🆕 添加透明度处理
+  // 🆕 添加透明度处�?
   if (typeof settings.glassOpacity === "number") {
     const opacity = Math.max(0, Math.min(100, Math.round(settings.glassOpacity)));
     prepared.glassOpacity = opacity;
@@ -539,7 +516,7 @@ function prepareSiteSettings(settings) {
 }
 
 /**
- * 应用容器透明度
+ * 应用容器透明�?
  */
 function applyGlassOpacity(opacity) {
   const value = typeof opacity === "number" ? opacity : 40;
@@ -561,9 +538,8 @@ function applySiteSettings(settings) {
   updateGreetingDisplay();
   updateFooter(prepared.footer);
   setActiveWeather(prepared.weather, { source: "settings" });
-  applyGlassOpacity(prepared.glassOpacity); // 🆕 应用透明度
-  loadWallpaper(prepared.wallpaperUrl); // 🆕 在这里加载壁纸
-  // 🆕 根据开关决定是否加载壁纸
+  applyGlassOpacity(prepared.glassOpacity); // 🆕 应用透明�?
+  // 🆕 根据开关决定是否加载壁�?
   if (prepared.useWallpaper) {
     loadWallpaper(prepared.wallpaperUrl);
   } else {
@@ -676,7 +652,7 @@ function updateRunningDays(runningDays) {
   
   runningDaysElement.textContent = days;
   
-  // 🆕 只有当天数大于 0 时才显示
+  // 🆕 只有当天数大�?0 时才显示
   if (days > 0) {
     footerMetaElement.hidden = false;
   } else {
@@ -1119,7 +1095,7 @@ function normaliseWeatherSetting(raw) {
   // 🆕 处理对象格式 { city: ["北京", "上海"] }
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     if (Array.isArray(raw.city)) {
-      // 将 { city: ["北京", "上海"] } 转换为 [{ city: "北京" }, { city: "上海" }]
+      // �?{ city: ["北京", "上海"] } 转换�?[{ city: "北京" }, { city: "上海" }]
       return raw.city
         .map(cityName => {
           const trimmed = String(cityName).trim();
@@ -1131,7 +1107,7 @@ function normaliseWeatherSetting(raw) {
       return trimmed ? [{ city: trimmed }] : null;
     }
   }
-  // 处理数组或单个值
+  // 处理数组或单个�?
   if (Array.isArray(raw)) {
     return raw.map(item => {
       if (typeof item === "string") {
@@ -1203,12 +1179,6 @@ function applyRuntimeConfig(config) {
   }
 }
 
-function weathersAreEqual(a, b) {
-  if (!a || !b) {
-    return false;
-  }
-  return (a.city || "") === (b.city || "");
-}
 
 function updateActiveWeather(weather) {
   if (!weather) {
@@ -1237,13 +1207,13 @@ function setActiveWeather(rawWeather, { source = "settings" } = {}) {
   }
   if (source === "settings") {
     weatherSource = "settings";
-    // 🔧 直接传递数组，不要转换为单个对象
+    // 🔧 直接传递数组，不要转换为单个对�?
     updateActiveWeather(weather);
     return;
   }
   if (weatherSource !== "settings") {
     weatherSource = "default";
-    // 🔧 直接传递数组，不要转换为单个对象
+    // 🔧 直接传递数组，不要转换为单个对�?
     updateActiveWeather(weather);
   }
 }
@@ -1296,58 +1266,42 @@ function getWeatherEmoji(condition) {
 }
 
 
-async function updateWeather(weather, retryCount = 0) {
-  const requestToken = ++weatherRequestToken;
-  
-  // 🆕 检查是否传入了多个城市（支持数组格式）
-  if (Array.isArray(weather) && weather.length > 1) {
-    console.log('🌍 检测到多个城市，开始获取天气...');
-    
-    const weatherPromises = weather.map(async (w) => {
-      const city = w.city || '';
-      if (!city) return null;
-      
-      try {
-        const apiUrl = `https://60s.viki.moe/v2/weather?query=${encodeURIComponent(city)}`;
-        const response = await fetch(apiUrl);
-        const payload = await response.json();
-        
-        if (payload.code === 200 && payload.data) {
-          const data = payload.data;
-          const condition = data.weather.condition || "天气良好";
-          const temperature = Math.round(data.weather.temperature);
-          const emoji = getWeatherEmoji(condition);
-          
-          return `${emoji} ${data.location.city} · ${condition} ${temperature}°C`;
-        }
-      } catch (error) {
-        console.error(`获取 ${city} 天气失败:`, error);
-      }
-      
-      return null;
-    });
-    
-    const results = await Promise.all(weatherPromises);
-    const validResults = results.filter(r => r !== null);
-    
-    if (validResults.length > 0) {
-      console.log(`✅ 成功获取 ${validResults.length} 个城市的天气`);
-      startWeatherRotation(validResults);
-      return;
-    } else {
-      console.warn('⚠️ 所有城市天气获取失败，使用默认城市');
-    }
+function formatWeatherItem(item) {
+  if (!item || typeof item !== "object") {
+    return "";
   }
-  
-  // 单城市处理逻辑（保持不变）
-  const city = typeof weather?.city === "string" ? weather.city.trim() : "";
+  const condition = typeof item.text === "string" ? item.text.trim() : "";
+  const city = typeof item.city === "string" ? item.city.trim() : "";
+  const temperature = Number(item.temperature);
+  const temperatureText = Number.isFinite(temperature) ? `${Math.round(temperature)}°C` : "";
+  const emoji = condition ? getWeatherEmoji(condition) : "🌤�?";
+  const cityLabel = city ? `${city} · ` : "";
+  const detail = condition || "天气良好";
+  const suffix = temperatureText ? ` ${temperatureText}` : "";
+  return `${emoji} ${cityLabel}${detail}${suffix}`.trim();
+}
+
+function getFallbackCity(weather) {
+  if (Array.isArray(weather)) {
+    for (const entry of weather) {
+      if (entry && typeof entry.city === "string" && entry.city.trim()) {
+        return entry.city.trim();
+      }
+    }
+  } else if (weather && typeof weather.city === "string" && weather.city.trim()) {
+    return weather.city.trim();
+  }
+  return "";
+}
+
+async function updateWeather(weather, retryCount = 0) {
+  if (!weatherElement) return;
+  const requestToken = ++weatherRequestToken;
   const maxRetries = 2;
   const retryDelay = 1000;
 
   try {
-    const apiUrl = `https://60s.viki.moe/v2/weather${city ? `?query=${encodeURIComponent(city)}` : ''}`;
-    const response = await fetch(apiUrl);
-
+    const response = await fetch("/api/weather", { cache: "no-cache" });
     let payload;
     try {
       payload = await response.json();
@@ -1355,7 +1309,7 @@ async function updateWeather(weather, retryCount = 0) {
       throw new Error("天气服务响应异常");
     }
 
-    if (!response.ok || payload.code !== 200) {
+    if (!response.ok || !payload || payload.success !== true) {
       const message = payload?.message || "天气数据请求失败";
       throw new Error(message);
     }
@@ -1364,37 +1318,36 @@ async function updateWeather(weather, retryCount = 0) {
       return;
     }
 
-    const data = payload.data;
-    if (!data || !data.weather) {
+    const data = Array.isArray(payload.data) ? payload.data : [];
+    const formatted = data.map(formatWeatherItem).filter(Boolean);
+
+    if (!formatted.length) {
       throw new Error("天气数据格式异常");
     }
 
-    const weatherData = data.weather;
-    const locationData = data.location;
-
-    const condition = weatherData.condition || "天气良好";
-    const temperature = Number(weatherData.temperature);
-    const temperatureText = Number.isFinite(temperature) ? `${Math.round(temperature)}°C` : "";
-    const resolvedCity = locationData?.city || city || getDefaultWeather().city;
-
-    const weatherEmoji = getWeatherEmoji(condition);
-    
-    const locationLabel = resolvedCity ? `${resolvedCity} · ` : "";
-    weatherElement.textContent = `${weatherEmoji} ${locationLabel}${condition}${temperatureText}`.trim();
-    
-    updateFloatingCard();
-    
-  } catch (error) {
-    updateFloatingCard();
-    console.error("天气数据获取失败", error);
-    
     if (weatherRotationInterval) {
       clearInterval(weatherRotationInterval);
       weatherRotationInterval = null;
     }
-    
+
+    if (formatted.length > 1) {
+      startWeatherRotation(formatted);
+      return;
+    }
+
+    weatherElement.textContent = formatted[0];
+    updateFloatingCard();
+  } catch (error) {
+    updateFloatingCard();
+    console.error("天气数据获取失败", error);
+
+    if (weatherRotationInterval) {
+      clearInterval(weatherRotationInterval);
+      weatherRotationInterval = null;
+    }
+
     weatherElement.textContent = "天气信息获取失败";
-    
+
     if (requestToken !== weatherRequestToken) {
       return;
     }
@@ -1409,16 +1362,13 @@ async function updateWeather(weather, retryCount = 0) {
       return;
     }
 
-    const fallbackCity = city || getDefaultWeather().city;
+    const fallbackCity = getFallbackCity(weather) || getDefaultWeather().city;
     const locationLabel = fallbackCity ? `${fallbackCity} · ` : "";
     const rawMessage = error && typeof error.message === "string" ? error.message.trim() : "";
     const message = rawMessage && /[\u4e00-\u9fff]/.test(rawMessage) ? rawMessage : "天气信息暂不可用";
     weatherElement.textContent = `${locationLabel}${message}`.trim();
   }
 }
-
-
-
 let weatherRotationInterval = null;
 
 
@@ -1479,10 +1429,10 @@ async function loadWallpaper(wallpaperUrl) {
     return;
   }
   
-  // 使用传入的 URL，如果为空则使用默认值
+  // 使用传入�?URL，如果为空则使用默认�?
   const url = (wallpaperUrl && wallpaperUrl.trim()) || 'https://bing.img.run/uhd.php';
   
-  console.log('🖼️ 开始加载壁纸:', url);
+  console.log('🖼�?开始加载壁�?', url);
   
   try {
     const img = new Image();
@@ -1490,7 +1440,7 @@ async function loadWallpaper(wallpaperUrl) {
     img.onload = () => {
       container.style.backgroundImage = `url('${url}')`;
       container.classList.add('loaded');
-      console.log('✅ 壁纸加载成功:', url);
+      console.log('�?壁纸加载成功:', url);
     };
     
     img.onerror = () => {
@@ -1501,15 +1451,15 @@ async function loadWallpaper(wallpaperUrl) {
         loadWallpaper('https://bing.img.run/uhd.php');
       } else {
         // 默认壁纸也加载失败，保持原有渐变背景
-        console.error('❌ 默认壁纸也加载失败，保持原有背景');
+        console.error('�?默认壁纸也加载失败，保持原有背景');
       }
     };
     
-    // 开始加载图片
+    // 开始加载图�?
     img.src = url;
     
   } catch (error) {
-    console.error('❌ 壁纸加载出错:', error);
+    console.error('�?壁纸加载出错:', error);
   }
 }
 
@@ -1519,7 +1469,7 @@ async function initialise() {
   updateDocumentTitle(DEFAULT_SITE_SETTINGS.siteName);
   updateFavicon(DEFAULT_SITE_SETTINGS.siteLogo, DEFAULT_SITE_SETTINGS.siteName);
   updateFooter(DEFAULT_SITE_SETTINGS.footer);
-  applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity); // 🆕 应用默认透明度
+  applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity); // 🆕 应用默认透明�?
 
 
   showCollection(activeCollection);
@@ -1607,7 +1557,7 @@ async function initialise() {
   }
   // 🆕 浮动卡片功能
   if (floatingCard) {
-    // 监听滚动事件（使用节流优化性能）
+    // 监听滚动事件（使用节流优化性能�?
     const throttledScroll = throttle(handleFloatingVisibility, 100);
     window.addEventListener('scroll', throttledScroll, { passive: true });
     
@@ -1624,16 +1574,22 @@ async function initialise() {
             floatingCard.classList.remove('is-expanded');
           }, 3000);
         } else {
-          // 已展开状态，点击回顶部
+          // 已展开状态，点击回顶�?
           scrollToTop();
           floatingCard.classList.remove('is-expanded');
         }
       } else {
-        // 桌面端：直接回顶部
+        // 桌面端：直接回顶�?
         scrollToTop();
       }
     });
-    // 初始检查滚动位置
+    floatingCard.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        floatingCard.click();
+      }
+    });
+    // 初始检查滚动位�?
     handleFloatingVisibility();
     
     // 初始更新内容

@@ -73,7 +73,6 @@ function replaceChildrenSafe(target, ...nodes) {
   });
 }
 
-const STORAGE_KEY = "modern-navigation-admin-token";
 const DATA_ENDPOINT = "/api/admin/data";
 const PASSWORD_ENDPOINT = "/api/admin/password";
 
@@ -96,8 +95,8 @@ const defaultSettings = {
   greeting: siteGreetingInput && siteGreetingInput.value.trim() ? siteGreetingInput.value.trim() : "",
   footer: siteFooterInput && siteFooterInput.value ? normaliseFooterValue(siteFooterInput.value) : "",
   weather: createDefaultWeatherSettings(),
-  glassOpacity: 40, // 🆕 添加默认透明度
-  useWallpaper: true, // 🆕 添加默认值
+  glassOpacity: 40, // 🆕 添加默认透明�?
+  useWallpaper: true, // 🆕 添加默认�?
   wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
 };
 
@@ -119,7 +118,6 @@ const state = {
   },
 };
 
-let authToken = "";
 let isDirty = false;
 let modalContext = null;
 
@@ -214,7 +212,7 @@ function normaliseSettingsIncoming(input) {
   if (typeof input.footer === "string") {
     prepared.footer = normaliseFooterValue(input.footer);
   }
-  // 🆕 添加透明度处理
+  // 🆕 添加透明度处�?
   if (typeof input.glassOpacity === "number") {
     const opacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
     prepared.glassOpacity = opacity;
@@ -347,7 +345,7 @@ function applySettingsToInputs(settings) {
   if (siteFooterInput) siteFooterInput.value = settings.footer || "";
   updateFooterPreview(settings.footer);
 
-  // 🆕 应用透明度设置
+  // 🆕 应用透明度设�?
   const opacity = typeof settings.glassOpacity === "number" ? settings.glassOpacity : 40;
   if (siteGlassOpacityInput) {
     siteGlassOpacityInput.value = opacity;
@@ -355,14 +353,14 @@ function applySettingsToInputs(settings) {
   if (opacityValueDisplay) {
     opacityValueDisplay.textContent = `${opacity}%`;
   }
-  // 🆕 应用 useWallpaper 状态
+  // 🆕 应用 useWallpaper 状�?
   if (siteUseWallpaperInput) {
     siteUseWallpaperInput.checked = settings.useWallpaper !== false;
   }
   // 🆕 应用壁纸 URL 设置
   if (siteWallpaperUrlInput) {
     siteWallpaperUrlInput.value = settings.wallpaperUrl || "";
-    // 🆕 根据开关状态禁用/启用输入框
+    // 🆕 根据开关状态禁�?启用输入�?
     siteWallpaperUrlInput.disabled = !siteUseWallpaperInput?.checked;
   }
 
@@ -376,7 +374,7 @@ function applySettingsToInputs(settings) {
 
   updateWeatherSummary(normalisedWeather);
   updatePageIdentity(settings);
-  // 应该从 state.stats 中获取
+  // 应该�?state.stats 中获�?
   if (siteStartDateInput) {
     siteStartDateInput.value = state.stats?.siteStartDate || "";
   }
@@ -761,7 +759,7 @@ function hideBookmarkCategoryField() {
 function openEditor(type, index) {
   const fetchLogoButton = document.getElementById("fetch-logo-button");
   if (fetchLogoButton) {
-    // 移除旧的监听器以防重复绑定
+    // 移除旧的监听器以防重复绑�?
     fetchLogoButton.removeEventListener("click", handleFetchLogo);
     fetchLogoButton.addEventListener("click", handleFetchLogo);
   }
@@ -911,7 +909,7 @@ function updateStateFromResponse(data) {
   state.apps = normaliseIncoming(data?.apps, "apps");
   state.bookmarks = normaliseIncoming(data?.bookmarks, "bookmarks");
   state.settings = normaliseSettingsIncoming(data?.settings);
-  // ⚠️ 关键修复：正确设置 stats
+  // ⚠️ 关键修复：正确设�?stats
   state.stats = {
     siteStartDate: data?.siteStartDate || null,
   };
@@ -921,17 +919,10 @@ function updateStateFromResponse(data) {
 }
 
 function buildAuthHeaders(extra = {}) {
-  if (!authToken) {
-    return { ...extra };
-  }
-  return {
-    ...extra,
-    Authorization: `Bearer ${authToken}`,
-  };
+  return { ...extra };
 }
 
 async function loadData(showStatus = true) {
-  if (!authToken) return false;
   try {
     const response = await fetch(DATA_ENDPOINT, {
       headers: buildAuthHeaders(),
@@ -950,7 +941,6 @@ async function loadData(showStatus = true) {
     const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
 
     updateStateFromResponse(data);
-    if (logoutButton) logoutButton.disabled = false;
     if (showStatus) {
       setStatus("数据已加载。", "neutral");
     }
@@ -964,10 +954,6 @@ async function loadData(showStatus = true) {
 
 async function saveChanges() {
   if (!saveButton) return;
-  if (!authToken) {
-    setStatus("请登录后再保存。", "error");
-    return;
-  }
 
   saveButton.disabled = true;
   setStatus("正在保存修改...", "neutral");
@@ -1069,40 +1055,19 @@ async function extractErrorMessage(response) {
   return response.statusText;
 }
 
-function loadStoredToken() {
-  try {
-    return window.localStorage.getItem(STORAGE_KEY) || "";
-  } catch (_error) {
-    return "";
-  }
-}
 
-function saveToken(token) {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, token);
-  } catch (_error) {
-    // ignore storage errors
-  }
-}
-
-function clearStoredToken() {
-  try {
-    window.localStorage.removeItem(STORAGE_KEY);
-  } catch (_error) {
-    // ignore storage errors
-  }
-}
 
 function handleUnauthorized(message) {
-  clearStoredToken();
-  authToken = "";
   setStatus(message || "登录状态已失效，正在跳转到登录页...", "error");
   window.location.replace("/login");
 }
 
-function handleLogout() {
-  clearStoredToken();
-  authToken = "";
+async function handleLogout() {
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } catch (_error) {
+    // ignore
+  }
   state.apps = [];
   state.bookmarks = [];
   state.settings = normaliseSettingsIncoming(null);
@@ -1138,11 +1103,7 @@ async function handlePasswordSubmit(event) {
   event.preventDefault();
   if (!passwordForm) return;
 
-  if (!authToken) {
-    setPasswordMessage("请登录后再修改密码。", "error");
-    window.location.replace("/login");
-    return;
-  }
+  
 
   const currentValue = currentPasswordInput ? currentPasswordInput.value : "";
   const trimmedCurrent = currentValue.trim();
@@ -1295,7 +1256,7 @@ function bindEvents() {
   });
 
   
-  // 🆕 添加透明度滑块事件
+  // 🆕 添加透明度滑块事�?
   if (siteGlassOpacityInput) {
     siteGlassOpacityInput.addEventListener("input", () => {
       const value = parseInt(siteGlassOpacityInput.value, 10);
@@ -1308,7 +1269,7 @@ function bindEvents() {
     });
   }
 
-  // 🆕 壁纸 URL 输入框事件
+  // 🆕 壁纸 URL 输入框事�?
   if (siteWallpaperUrlInput) {
     siteWallpaperUrlInput.addEventListener("input", () => {
       state.settings.wallpaperUrl = siteWallpaperUrlInput.value.trim();
@@ -1316,18 +1277,18 @@ function bindEvents() {
       setStatus("壁纸 URL 已更新，记得保存。", "neutral");
     });
   }
-  // 🆕 添加开关事件监听
+  // 🆕 添加开关事件监�?
   if (siteUseWallpaperInput) {
     siteUseWallpaperInput.addEventListener("change", () => {
       const isEnabled = siteUseWallpaperInput.checked;
-      // 启用/禁用 URL 输入框
+      // 启用/禁用 URL 输入�?
       if (siteWallpaperUrlInput) {
         siteWallpaperUrlInput.disabled = !isEnabled;
       } 
-      // 更新状态
+      // 更新状�?
       state.settings.useWallpaper = isEnabled;
       markDirty();
-      setStatus(`壁纸已${isEnabled ? "启用" : "禁用"}，记得保存。`, "neutral");
+      setStatus(`壁纸�?{isEnabled ? "启用" : "禁用"}，记得保存。`, "neutral");
     });
   }
 
@@ -1432,7 +1393,7 @@ function bindEvents() {
     });
   }
 
-  // 🆕 运行开始日期输入事件
+  // 🆕 运行开始日期输入事�?
   if (siteStartDateInput) {
     siteStartDateInput.addEventListener("input", () => {
       state.stats.siteStartDate = siteStartDateInput.value || null;
@@ -1488,23 +1449,10 @@ async function initialise() {
   applySettingsToInputs(state.settings);
   render();
   resetDirty();
-
-  const storedToken = loadStoredToken();
-  if (!storedToken) {
-    // 没有 token，跳转到登录页
-    window.location.replace("/login");
-    return;
-  }
-
-  authToken = storedToken;
-  if (logoutButton) logoutButton.disabled = false;
-  setStatus("正在加载数据...", "neutral");
+  setStatus("���ڼ�������...", "neutral");
 
   const success = await loadData(false);
-  if (!success) {
-    // token 无效，跳转到登录页
-    window.location.replace("/login");
-  } else {
+  if (success) {
     setStatus("数据已加载。", "neutral");
   }
 }

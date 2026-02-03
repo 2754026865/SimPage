@@ -19,8 +19,6 @@
   --danger: #ef4444;
   --success: #22c55e;
   --glass-opacity: 0.4; /* 默认 40% */
-  --glass-bg: rgba(255, 255, 255, 0.55);
-  --glass-border: rgba(255, 255, 255, 0.72);
 }
 
 body.dark-theme,
@@ -323,6 +321,7 @@ body {
   background: linear-gradient(140deg, #fdfdfd 0%, #f5f7fb 52%, #e6ecf5 100%);
   color: var(--text-primary);
   position: relative;
+  z-index: 0;
   overflow-x: hidden;
   scroll-behavior: smooth;
 }
@@ -438,15 +437,19 @@ body.admin-body {
 }
 
 .badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
   align-self: flex-start;
   font-size: 0.78rem;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
   background: var(--accent-muted);
   color: rgba(31, 31, 31, 0.6);
   padding: 0.4rem 0.9rem;
   border-radius: 999px;
   font-weight: 600;
+  transition: background 200ms ease, transform 200ms ease;
 }
 
 body.dark-theme .badge {
@@ -1008,6 +1011,7 @@ body.dark-theme .theme-toggle:focus-visible {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: break-word;
@@ -1025,6 +1029,7 @@ body.dark-theme .theme-toggle:focus-visible {
   display: -webkit-box;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
   text-overflow: ellipsis;
   word-break: break-word;
@@ -2053,11 +2058,12 @@ body.dark-theme .opacity-value {
   left: 0;
   width: 100%;
   height: 100%;
-  z-index: -1;
+  z-index: 0;
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 1.2s ease-in-out;
 }
 
@@ -2228,20 +2234,6 @@ body.dark-theme .progress-display .progress-bar {
 }
 
 /* 动态标签样式增强 */
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.78rem;
-  letter-spacing: 0.12em;
-  background: var(--accent-muted);
-  color: rgba(31, 31, 31, 0.6);
-  padding: 0.4rem 0.9rem;
-  border-radius: 999px;
-  font-weight: 600;
-  transition: background 200ms ease, transform 200ms ease;
-}
-
 .badge:hover {
   transform: scale(1.02);
 }
@@ -2294,6 +2286,11 @@ body.dark-theme .progress-display .progress-bar {
 /* 悬停效果 */
 .floating-summary:hover {
   box-shadow: 0 12px 48px rgba(15, 23, 42, 0.18);
+}
+
+.floating-summary:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.28), 0 12px 48px rgba(15, 23, 42, 0.18);
 }
 
 /* 紧凑模式 */
