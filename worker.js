@@ -55,11 +55,11 @@ router.post("/api/logout", handleLogout);
 
 // 登录页面路由
 router.get("/login", (request, env, ctx) => serveStatic(request, env, ctx, "/login.html"));
-router.get("/login/", () => Response.redirect("/login", 301));
+router.get("/login/", (request) => redirectWithBase(request, "/login", 301));
 
 // 后台管理页面 - 需要验�?token
 router.get("/admin", handleAdminPage);
-router.get("/admin/", () => Response.redirect("/admin", 301));
+router.get("/admin/", (request) => redirectWithBase(request, "/admin", 301));
 
 // Fallback for all other GET requests to serve static assets or index.html
 router.get("*", (request, env, ctx) => serveStatic(request, env, ctx));
@@ -170,7 +170,12 @@ async function handleAdminPage(request, env, ctx) {
       return serveStatic(request, env, ctx, "/admin.html");
     }
   }
-  return Response.redirect("/login", 302);
+  return redirectWithBase(request, "/login", 302);
+}
+
+function redirectWithBase(request, pathname, status = 302) {
+  const target = new URL(pathname, request.url).toString();
+  return Response.redirect(target, status);
 }
 
 
