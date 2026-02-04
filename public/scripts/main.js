@@ -644,8 +644,22 @@ function updateFooter(rawContent) {
   refreshFooterVisibility();
 }
 
+function ensureRunningDaysFloating() {
+  if (!footerMetaElement) return;
+
+  if (!footerMetaElement.classList.contains("is-fixed")) {
+    footerMetaElement.classList.add("is-fixed");
+  }
+  if (footerMetaElement.hidden) {
+    footerMetaElement.hidden = false;
+  }
+  if (footerMetaElement.parentElement !== document.body) {
+    document.body.appendChild(footerMetaElement);
+  }
+}
+
 function updateRunningDays(runningDays, siteStartDate) {
-  if (!footerElement || !footerMetaElement || !runningDaysElement) return;
+  if (!footerMetaElement || !runningDaysElement) return;
 
   const parsed = Number(runningDays);
   let days = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : null;
@@ -668,7 +682,7 @@ function updateRunningDays(runningDays, siteStartDate) {
   runningDaysElement.textContent = hasValue ? days : 0;
 
   hasRunningDaysValue = hasValue;
-  footerMetaElement.hidden = !hasRunningDaysValue;
+  ensureRunningDaysFloating();
 
   refreshFooterVisibility();
 }
@@ -677,7 +691,8 @@ function updateRunningDays(runningDays, siteStartDate) {
 function refreshFooterVisibility() {
   if (!footerElement) return;
   const hasContent = Boolean(footerContentValue);
-  const shouldShowFooter = hasContent || hasRunningDaysValue; // ?? ??
+  const isRunningDaysFloating = footerMetaElement?.classList?.contains("is-fixed");
+  const shouldShowFooter = hasContent || (!isRunningDaysFloating && hasRunningDaysValue);
   footerElement.hidden = !shouldShowFooter;
 }
 
@@ -1479,7 +1494,8 @@ async function initialise() {
   updateDocumentTitle(DEFAULT_SITE_SETTINGS.siteName);
   updateFavicon(DEFAULT_SITE_SETTINGS.siteLogo, DEFAULT_SITE_SETTINGS.siteName);
   updateFooter(DEFAULT_SITE_SETTINGS.footer);
-  applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity); // 🆕 应用默认透明�?
+  applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity);
+  ensureRunningDaysFloating();
 
 
   showCollection(activeCollection);
