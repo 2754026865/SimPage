@@ -99,6 +99,7 @@ const BACK_TO_TOP_THRESHOLD = 320;
 let customGreeting = "";
 let yiyanMessage = "";
 let footerContentValue = "";
+let hasRunningDaysValue = false;
 
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
   hour: "2-digit",
@@ -340,7 +341,7 @@ function updateFloatingCard() {
   }
   
   if (expandedLunar) {
-    expandedLunar.textContent = `${lunar} · �?{weekNum}周`;
+    expandedLunar.textContent = `${lunar} · 第${weekNum}周`;
   }
   
   if (expandedProgressFull) {
@@ -376,7 +377,7 @@ function updateClock() {
   if (lunarDateElement) {
     const lunar = formatLunar(now);
     const weekNum = getWeekNumber(now);
-    lunarDateElement.textContent = `${lunar} · �?{weekNum}周`;
+    lunarDateElement.textContent = `${lunar} · 第${weekNum}周`;
   }
   
   // 🆕 更新今日进度
@@ -434,7 +435,7 @@ async function loadData() {
     const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
 
     applySiteSettings(data?.settings);
-    updateRunningDays(data?.runningDays); // 🆕 修改这里
+    updateRunningDays(data?.runningDays, data?.siteStartDate); // 🆕 修改这里
     applyRuntimeConfig(data?.config);
 
     originalData.apps = prepareCollection(data?.apps, "apps");
@@ -643,21 +644,19 @@ function updateFooter(rawContent) {
   refreshFooterVisibility();
 }
 
-function updateRunningDays(runningDays) {
+function updateRunningDays(runningDays, siteStartDate) {
   if (!footerElement || !footerMetaElement || !runningDaysElement) return;
   
-  const days = typeof runningDays === "number" && Number.isFinite(runningDays) 
-    ? Math.max(0, Math.floor(runningDays)) 
-    : 0;
+  const parsed = Number(runningDays);
+  const hasValidValue = Number.isFinite(parsed);
+  const hasStartDate = typeof siteStartDate === "string" && siteStartDate.trim().length > 0;
+  const days = hasValidValue ? Math.max(0, Math.floor(parsed)) : 0;
   
   runningDaysElement.textContent = days;
   
-  // 🆕 只有当天数大�?0 时才显示
-  if (days > 0) {
-    footerMetaElement.hidden = false;
-  } else {
-    footerMetaElement.hidden = true;
-  }
+  // ?? ???????????????? 0 ??
+  hasRunningDaysValue = hasValidValue && hasStartDate;
+  footerMetaElement.hidden = !hasRunningDaysValue;
   
   refreshFooterVisibility();
 }
@@ -666,8 +665,7 @@ function updateRunningDays(runningDays) {
 function refreshFooterVisibility() {
   if (!footerElement) return;
   const hasContent = Boolean(footerContentValue);
-  const hasRunningDays = runningDaysElement && runningDaysElement.textContent !== "0"; // 🆕 修改
-  const shouldShowFooter = hasContent || hasRunningDays; // 🆕 修改
+  const shouldShowFooter = hasContent || hasRunningDaysValue; // ?? ??
   footerElement.hidden = !shouldShowFooter;
 }
 
