@@ -266,16 +266,33 @@ async function handleGetAdminData(request, env) {
 
 async function handleDataUpdate(request, env) {
   try {
-    const { apps, bookmarks, settings, stats } = await request.json(); // ⚠️ 添加 stats
-    const normalisedApps = normaliseCollection(apps, { label: "应用", type: "apps" });
-    const normalisedBookmarks = normaliseCollection(bookmarks, { label: "书签", type: "bookmarks" });
-    const normalisedSettings = normaliseSettingsInput(settings);
+    const body = await request.json().catch(() => null);
+    if (!body || typeof body !== "object") {
+      return jsonResponse({ success: false, message: "请求数据不能为空。" }, 400);
+    }
+
+    const hasInput = ["apps", "bookmarks", "settings", "stats"].some((key) =>
+      Object.prototype.hasOwnProperty.call(body, key)
+    );
+    if (!hasInput) {
+      return jsonResponse({ success: false, message: "请求数据不能为空。" }, 400);
+    }
 
     const existing = await readFullData(env);
-    // 🆕 处理 stats
+    const settingsInput = body.settings ?? existing.settings;
+    const appsInput = Array.isArray(body.apps) ? body.apps : existing.apps;
+    const bookmarksInput = Array.isArray(body.bookmarks) ? body.bookmarks : existing.bookmarks;
+
+    const normalisedApps = normaliseCollection(appsInput, { label: "应用", type: "apps" });
+    const normalisedBookmarks = normaliseCollection(bookmarksInput, { label: "书签", type: "bookmarks" });
+    const normalisedSettings = normaliseSettingsInput(settingsInput);
+
     const normalisedStats = {
       visitorCount: existing.stats?.visitorCount || 0,
-      siteStartDate: typeof stats?.siteStartDate === "string" ? stats.siteStartDate : null,
+      siteStartDate:
+        typeof body.stats?.siteStartDate === "string"
+          ? body.stats.siteStartDate
+          : existing.stats?.siteStartDate || null,
     };
 
     const payload = {

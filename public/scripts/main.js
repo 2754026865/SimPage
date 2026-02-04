@@ -646,18 +646,30 @@ function updateFooter(rawContent) {
 
 function updateRunningDays(runningDays, siteStartDate) {
   if (!footerElement || !footerMetaElement || !runningDaysElement) return;
-  
+
   const parsed = Number(runningDays);
-  const hasValidValue = Number.isFinite(parsed);
+  let days = Number.isFinite(parsed) ? Math.max(0, Math.floor(parsed)) : null;
   const hasStartDate = typeof siteStartDate === "string" && siteStartDate.trim().length > 0;
-  const days = hasValidValue ? Math.max(0, Math.floor(parsed)) : 0;
-  
-  runningDaysElement.textContent = days;
-  
-  // ?? ???????????????? 0 ??
-  hasRunningDaysValue = hasValidValue && hasStartDate;
+
+  if (days === null && hasStartDate) {
+    const datePart = siteStartDate.split("T")[0];
+    const [year, month, day] = datePart.split("-").map(Number);
+    if (Number.isFinite(year) && Number.isFinite(month) && Number.isFinite(day)) {
+      const start = new Date(year, month - 1, day);
+      if (!Number.isNaN(start.getTime())) {
+        const now = new Date();
+        const diffDays = Math.floor((now - start) / (1000 * 60 * 60 * 24));
+        days = Math.max(0, diffDays);
+      }
+    }
+  }
+
+  const hasValue = Number.isFinite(days);
+  runningDaysElement.textContent = hasValue ? days : 0;
+
+  hasRunningDaysValue = hasValue;
   footerMetaElement.hidden = !hasRunningDaysValue;
-  
+
   refreshFooterVisibility();
 }
 

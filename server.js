@@ -880,34 +880,52 @@ function sanitiseData(fullData) {
 
 async function handleDataUpdate(req, res, next) {
   try {
-    const { apps, bookmarks, settings, stats } = req.body || {}; // 🆕 添加 stats
+    const body = req.body || null;
+    if (!body || typeof body !== "object") {
+      res.status(400).json({ success: false, message: "请求数据不能为空。" });
+      return;
+    }
 
-    const normalisedApps = normaliseCollection(apps, { label: "应用", type: "apps" });
-    const normalisedBookmarks = normaliseCollection(bookmarks, {
+    const hasInput = ["apps", "bookmarks", "settings", "stats"].some((key) =>
+      Object.prototype.hasOwnProperty.call(body, key)
+    );
+    if (!hasInput) {
+      res.status(400).json({ success: false, message: "请求数据不能为空。" });
+      return;
+    }
+
+    const existing = await readFullData();
+    const settingsInput = body.settings ?? existing.settings;
+    const appsInput = Array.isArray(body.apps) ? body.apps : existing.apps;
+    const bookmarksInput = Array.isArray(body.bookmarks) ? body.bookmarks : existing.bookmarks;
+
+    const normalisedApps = normaliseCollection(appsInput, { label: "应用", type: "apps" });
+    const normalisedBookmarks = normaliseCollection(bookmarksInput, {
       label: "书签",
       type: "bookmarks",
     });
     let normalisedSettings;
     try {
-      normalisedSettings = normaliseSettingsInput(settings);
+      normalisedSettings = normaliseSettingsInput(settingsInput);
     } catch (error) {
       console.error("设置数据格式不正确", error);
       error.expose = true;
       throw error;
     }
 
-    const existing = await readFullData();
-    // 🆕 处理 stats
     const normalisedStats = {
       visitorCount: existing.stats?.visitorCount || 0,
-      siteStartDate: typeof stats?.siteStartDate === "string" ? stats.siteStartDate : null,
+      siteStartDate:
+        typeof body.stats?.siteStartDate === "string"
+          ? body.stats.siteStartDate
+          : existing.stats?.siteStartDate || null,
     };
 
     const payload = {
       settings: normalisedSettings,
       apps: normalisedApps,
       bookmarks: normalisedBookmarks,
-      stats: normalisedStats, // 🆕 使用新的 stats
+      stats: normalisedStats,
       admin: existing.admin,
     };
 
