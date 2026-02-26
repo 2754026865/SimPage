@@ -19,6 +19,7 @@
   --danger: #ef4444;
   --success: #22c55e;
   --glass-opacity: 0.4; /* 默认 40% */
+  --font-mono: "JetBrains Mono", "SFMono-Regular", "SF Mono", "Monaco", Consolas, "Liberation Mono", Menlo, monospace;
 }
 
 body.dark-theme,
@@ -450,10 +451,6 @@ body.admin-body {
   border-radius: 999px;
   font-weight: 600;
   transition: background 200ms ease, transform 200ms ease;
-}
-
-body.dark-theme .badge {
-  color: white;
 }
 
 .time-display {
@@ -918,7 +915,7 @@ body.dark-theme .theme-toggle:focus-visible {
 }
 
 .site-footer-content code {
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.88rem;
   background: rgba(15, 23, 42, 0.06);
   padding: 0.1rem 0.45rem;
@@ -1333,7 +1330,7 @@ body.dark-theme .theme-toggle:focus-visible {
 }
 
 .admin-table td[data-column="url"] {
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   color: rgba(31, 41, 55, 0.68);
   word-break: break-all;
@@ -1576,6 +1573,21 @@ body.dark-theme .theme-toggle:focus-visible {
   min-height: 88px;
 }
 
+.input-with-button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.input-with-button input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.input-with-button button {
+  flex-shrink: 0;
+}
+
 .field-description {
   margin: 0;
   font-size: 0.82rem;
@@ -1630,7 +1642,7 @@ body.dark-theme .theme-toggle:focus-visible {
 }
 
 .footer-preview-field .footer-preview code {
-  font-family: "JetBrains Mono", "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 0.85rem;
   background: rgba(15, 23, 42, 0.06);
   padding: 0.1rem 0.35rem;
@@ -2230,7 +2242,7 @@ body.dark-theme .field input[type="url"]:disabled {
   font-size: clamp(0.9rem, 2vw, 1.05rem);
   font-weight: 600;
   color: var(--text-primary);
-  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-family: var(--font-mono);
   letter-spacing: 0.02em;
   margin-top: 0.3rem;
   display: flex;
@@ -2244,7 +2256,7 @@ body.dark-theme .field input[type="url"]:disabled {
 }
 
 .progress-display .progress-bar {
-  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-family: var(--font-mono);
   letter-spacing: 0.05em;
   color: rgba(59, 130, 246, 0.85);
 }
@@ -2395,7 +2407,7 @@ body.dark-theme .progress-display .progress-bar {
 }
 
 .expanded-time {
-  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
 }
 
@@ -2410,7 +2422,7 @@ body.dark-theme .progress-display .progress-bar {
 }
 
 .expanded-progress {
-  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-family: var(--font-mono);
   font-size: 0.88rem;
   font-weight: 600;
   letter-spacing: 0.02em;

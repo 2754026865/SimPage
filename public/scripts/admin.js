@@ -1,4 +1,15 @@
 import { renderMarkdown } from "./markdown.js";
+import {
+  createFaviconController,
+  deriveFallbackIcon,
+  normaliseFooterValue,
+  replaceChildrenSafe,
+  scrollToTop as sharedScrollToTop,
+  setBackToTopVisibility,
+  setDocumentTitle,
+} from "./shared/ui-utils.js";
+import { fetchJson, getPayloadData, getPayloadMessage } from "./shared/api-utils.js";
+import { normaliseCollectionItems, normaliseWeatherSettingsForEditor } from "./shared/data-utils.js";
 
 const appsEditor = document.getElementById("apps-editor");
 const bookmarksEditor = document.getElementById("bookmarks-editor");
@@ -59,21 +70,10 @@ const typeLabels = {
   bookmarks: "书签",
 };
 
-function replaceChildrenSafe(target, ...nodes) {
-  if (!target) return;
-  if (typeof target.replaceChildren === "function") {
-    target.replaceChildren(...nodes);
-    return;
-  }
-  target.innerHTML = "";
-  nodes.forEach((node) => {
-    if (node) {
-      target.appendChild(node);
-    }
-  });
-}
-
 const DATA_ENDPOINT = "/api/admin/data";
+const PATCH_APPS_ENDPOINT = "/api/admin/apps";
+const PATCH_BOOKMARKS_ENDPOINT = "/api/admin/bookmarks";
+const PATCH_SETTINGS_ENDPOINT = "/api/admin/settings";
 const PASSWORD_ENDPOINT = "/api/admin/password";
 
 const defaultDocumentTitle = document.title || "导航后台编辑";
@@ -82,8 +82,16 @@ const defaultFaviconType = faviconLink?.getAttribute("type") || "";
 const defaultFaviconSizes = faviconLink?.getAttribute("sizes") || "";
 const DEFAULT_FAVICON_SYMBOL = "🧭";
 const ADMIN_TITLE_SUFFIX = " · 后台管理";
-const faviconCache = new Map();
 const BACK_TO_TOP_THRESHOLD = 320;
+const scrollToTop = sharedScrollToTop;
+
+const { updateFavicon } = createFaviconController({
+  faviconLink,
+  defaultHref: defaultFaviconHref,
+  defaultType: defaultFaviconType,
+  defaultSizes: defaultFaviconSizes,
+  defaultSymbol: DEFAULT_FAVICON_SYMBOL,
+});
 
 const DEFAULT_WEATHER_SETTINGS = {
   city: "北京",
@@ -95,8 +103,8 @@ const defaultSettings = {
   greeting: siteGreetingInput && siteGreetingInput.value.trim() ? siteGreetingInput.value.trim() : "",
   footer: siteFooterInput && siteFooterInput.value ? normaliseFooterValue(siteFooterInput.value) : "",
   weather: createDefaultWeatherSettings(),
-  glassOpacity: 40, // 🆕 添加默认透明�?
-  useWallpaper: true, // 🆕 添加默认�?
+  glassOpacity: 40, // 🆕 添加默认透明度
+  useWallpaper: true, // 🆕 添加默认值
   wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
 };
 
@@ -120,6 +128,23 @@ const state = {
 
 let isDirty = false;
 let modalContext = null;
+const savedSnapshot = {
+  apps: [],
+  bookmarks: [],
+  settings: {
+    siteName: defaultSettings.siteName,
+    siteLogo: defaultSettings.siteLogo,
+    greeting: defaultSettings.greeting,
+    footer: defaultSettings.footer,
+    weather: createDefaultWeatherSettings(),
+    glassOpacity: defaultSettings.glassOpacity,
+    useWallpaper: defaultSettings.useWallpaper,
+    wallpaperUrl: defaultSettings.wallpaperUrl,
+  },
+  stats: {
+    siteStartDate: null,
+  },
+};
 
 function setStatus(message, variant = "neutral") {
   if (!statusBar) return;
@@ -158,28 +183,6 @@ function createBlankItem(type) {
   };
 }
 
-function normaliseIncoming(collection, type) {
-  if (!Array.isArray(collection)) return [];
-  return collection.map((item) => ({
-    id: typeof item.id === "string" ? item.id : "",
-    name: typeof item.name === "string" ? item.name : "",
-    url: typeof item.url === "string" ? item.url : "",
-    description: typeof item.description === "string" ? item.description : "",
-    icon: typeof item.icon === "string" ? item.icon : "",
-    ...(type === "bookmarks"
-      ? { category: typeof item.category === "string" ? item.category : "" }
-      : {}),
-  }));
-}
-
-function normaliseFooterValue(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  const normalised = value.replace(/\r\n?/g, "\n");
-  return normalised.trim() ? normalised : "";
-}
-
 function normaliseSettingsIncoming(input) {
   const prepared = {
     siteName: defaultSettings.siteName,
@@ -212,7 +215,7 @@ function normaliseSettingsIncoming(input) {
   if (typeof input.footer === "string") {
     prepared.footer = normaliseFooterValue(input.footer);
   }
-  // 🆕 添加透明度处�?
+  // 🆕 添加透明度处理
   if (typeof input.glassOpacity === "number") {
     const opacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
     prepared.glassOpacity = opacity;
@@ -241,39 +244,115 @@ function createDefaultWeatherSettings() {
 }
 
 function normaliseWeatherSettingsIncoming(raw) {
-  const fallback = createDefaultWeatherSettings();
-  if (!raw || typeof raw !== "object") {
-    return { ...fallback };
-  }
+  return normaliseWeatherSettingsForEditor(raw, DEFAULT_WEATHER_SETTINGS.city);
+}
 
-  if (raw.weatherLocation && typeof raw.weatherLocation === "object") {
-    const legacy = raw.weatherLocation;
-    const city =
-      typeof legacy.label === "string" && legacy.label.trim()
-        ? legacy.label.trim()
-        : typeof legacy.id === "string" && legacy.id.trim()
-        ? legacy.id.trim()
-        : "";
-    return {
-      city: city || fallback.city,
-    };
-  }
+function toAppPayload(item) {
+  return {
+    id: typeof item?.id === "string" ? item.id.trim() : "",
+    name: typeof item?.name === "string" ? item.name.trim() : "",
+    url: typeof item?.url === "string" ? item.url.trim() : "",
+    description: typeof item?.description === "string" ? item.description.trim() : "",
+    icon: typeof item?.icon === "string" ? item.icon.trim() : "",
+  };
+}
 
-  const weather = { ...fallback };
+function toBookmarkPayload(item) {
+  const base = toAppPayload(item);
+  return {
+    ...base,
+    category: typeof item?.category === "string" ? item.category.trim() : "",
+  };
+}
 
-  if (typeof raw.city === "string" && raw.city.trim()) {
-    weather.city = raw.city.trim();
-  } else if (typeof raw.label === "string" && raw.label.trim()) {
-    weather.city = raw.label.trim();
-  } else if (typeof raw.name === "string" && raw.name.trim()) {
-    weather.city = raw.name.trim();
-  }
+function normaliseSiteStartDate(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed || null;
+}
 
-  if (!weather.city) {
-    weather.city = fallback.city;
-  }
+function syncSavedSnapshot() {
+  savedSnapshot.apps = state.apps.map(toAppPayload);
+  savedSnapshot.bookmarks = state.bookmarks.map(toBookmarkPayload);
+  savedSnapshot.settings = buildSettingsPayload(state.settings);
+  savedSnapshot.stats = {
+    siteStartDate: normaliseSiteStartDate(state.stats?.siteStartDate),
+  };
+}
 
-  return weather;
+function areValuesEqual(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+function diffCollectionItem(previous, next, keys) {
+  const changes = {};
+  keys.forEach((key) => {
+    if (!areValuesEqual(previous?.[key], next?.[key])) {
+      changes[key] = next?.[key];
+    }
+  });
+  return changes;
+}
+
+function buildCollectionPatchOperations(previousItems, currentItems, type) {
+  const toPayload = type === "bookmarks" ? toBookmarkPayload : toAppPayload;
+  const compareKeys =
+    type === "bookmarks"
+      ? ["name", "url", "description", "icon", "category"]
+      : ["name", "url", "description", "icon"];
+
+  const previousPayload = Array.isArray(previousItems) ? previousItems.map(toPayload) : [];
+  const currentPayload = Array.isArray(currentItems) ? currentItems.map(toPayload) : [];
+
+  const previousById = new Map();
+  previousPayload.forEach((item) => {
+    if (item.id) {
+      previousById.set(item.id, item);
+    }
+  });
+
+  const currentIds = new Set();
+  const operations = [];
+
+  currentPayload.forEach((item) => {
+    const id = typeof item.id === "string" ? item.id.trim() : "";
+    if (!id) {
+      operations.push({ op: "upsert", item });
+      return;
+    }
+
+    currentIds.add(id);
+    const previous = previousById.get(id);
+    if (!previous) {
+      operations.push({ op: "upsert", item });
+      return;
+    }
+
+    const changes = diffCollectionItem(previous, item, compareKeys);
+    if (Object.keys(changes).length > 0) {
+      operations.push({ op: "patch", id, changes });
+    }
+  });
+
+  previousById.forEach((_item, id) => {
+    if (!currentIds.has(id)) {
+      operations.push({ op: "delete", id });
+    }
+  });
+
+  return operations;
+}
+
+function buildSettingsPatch(previousSettings, nextSettings) {
+  const previousPayload = buildSettingsPayload(previousSettings || {});
+  const nextPayload = buildSettingsPayload(nextSettings || {});
+  const patch = {};
+  Object.keys(nextPayload).forEach((key) => {
+    if (!areValuesEqual(previousPayload[key], nextPayload[key])) {
+      patch[key] = nextPayload[key];
+    }
+  });
+  return patch;
 }
 
 function collectWeatherSettingsFromInputs(previous = state.settings.weather) {
@@ -345,7 +424,7 @@ function applySettingsToInputs(settings) {
   if (siteFooterInput) siteFooterInput.value = settings.footer || "";
   updateFooterPreview(settings.footer);
 
-  // 🆕 应用透明度设�?
+  // 🆕 应用透明度设置
   const opacity = typeof settings.glassOpacity === "number" ? settings.glassOpacity : 40;
   if (siteGlassOpacityInput) {
     siteGlassOpacityInput.value = opacity;
@@ -353,14 +432,14 @@ function applySettingsToInputs(settings) {
   if (opacityValueDisplay) {
     opacityValueDisplay.textContent = `${opacity}%`;
   }
-  // 🆕 应用 useWallpaper 状�?
+  // 🆕 应用 useWallpaper 状态
   if (siteUseWallpaperInput) {
     siteUseWallpaperInput.checked = settings.useWallpaper !== false;
   }
   // 🆕 应用壁纸 URL 设置
   if (siteWallpaperUrlInput) {
     siteWallpaperUrlInput.value = settings.wallpaperUrl || "";
-    // 🆕 根据开关状态禁�?启用输入�?
+    // 🆕 根据开关状态禁用/启用输入框
     siteWallpaperUrlInput.disabled = !siteUseWallpaperInput?.checked;
   }
 
@@ -374,7 +453,7 @@ function applySettingsToInputs(settings) {
 
   updateWeatherSummary(normalisedWeather);
   updatePageIdentity(settings);
-  // 应该�?state.stats 中获�?
+  // 应该从 state.stats 中获取
   if (siteStartDateInput) {
     siteStartDateInput.value = state.stats?.siteStartDate || "";
   }
@@ -396,120 +475,11 @@ function handleSettingsChange(field, value) {
 function updatePageIdentity(settings) {
   const siteName = settings?.siteName;
   const siteLogo = settings?.siteLogo;
-  updateDocumentTitle(siteName);
+  setDocumentTitle(siteName, {
+    defaultTitle: defaultDocumentTitle,
+    suffix: ADMIN_TITLE_SUFFIX,
+  });
   updateFavicon(siteLogo, siteName);
-}
-
-function updateDocumentTitle(siteName) {
-  const clean = typeof siteName === "string" ? siteName.trim() : "";
-  document.title = clean ? `${clean}${ADMIN_TITLE_SUFFIX}` : defaultDocumentTitle;
-}
-
-function applyDefaultFavicon() {
-  if (!faviconLink) return false;
-  if (!defaultFaviconHref || defaultFaviconHref === "data:,") {
-    return false;
-  }
-  faviconLink.href = defaultFaviconHref;
-  if (defaultFaviconType) {
-    faviconLink.setAttribute("type", defaultFaviconType);
-  } else {
-    faviconLink.removeAttribute("type");
-  }
-  if (defaultFaviconSizes) {
-    faviconLink.setAttribute("sizes", defaultFaviconSizes);
-  } else {
-    faviconLink.removeAttribute("sizes");
-  }
-  return true;
-}
-
-function updateFavicon(rawValue, siteName) {
-  if (!faviconLink) return;
-  const cleanValue = typeof rawValue === "string" ? rawValue.trim() : "";
-
-  if (cleanValue) {
-    if (isLogoUrl(cleanValue)) {
-      faviconLink.href = cleanValue;
-      faviconLink.removeAttribute("type");
-      faviconLink.removeAttribute("sizes");
-      return;
-    }
-
-    const emojiUrl = createEmojiFavicon(cleanValue);
-    if (emojiUrl) {
-      faviconLink.href = emojiUrl;
-      faviconLink.setAttribute("type", "image/png");
-      faviconLink.setAttribute("sizes", "64x64");
-      return;
-    }
-  }
-
-  if (applyDefaultFavicon()) {
-    return;
-  }
-
-  const fallbackUrl = createEmojiFavicon(deriveFaviconSymbol(siteName));
-  if (fallbackUrl) {
-    faviconLink.href = fallbackUrl;
-    faviconLink.setAttribute("type", "image/png");
-    faviconLink.setAttribute("sizes", "64x64");
-    return;
-  }
-
-  if (defaultFaviconHref) {
-    faviconLink.href = defaultFaviconHref;
-  } else {
-    faviconLink.href = "data:,";
-  }
-  faviconLink.removeAttribute("type");
-  faviconLink.removeAttribute("sizes");
-}
-
-function deriveFaviconSymbol(siteName) {
-  if (typeof siteName === "string" && siteName.trim()) {
-    const units = Array.from(siteName.trim());
-    if (units.length > 0) {
-      return units[0];
-    }
-  }
-  return DEFAULT_FAVICON_SYMBOL;
-}
-
-function createEmojiFavicon(symbolValue) {
-  const base = typeof symbolValue === "string" ? symbolValue.trim() : "";
-  const units = base ? Array.from(base) : [];
-  const symbol = units.length > 0 ? units[0] : DEFAULT_FAVICON_SYMBOL;
-
-  if (faviconCache.has(symbol)) {
-    return faviconCache.get(symbol);
-  }
-
-  const canvas = document.createElement("canvas");
-  const size = 64;
-  canvas.width = size;
-  canvas.height = size;
-  const context = canvas.getContext("2d");
-  if (!context) {
-    return null;
-  }
-
-  context.clearRect(0, 0, size, size);
-  context.fillStyle = "rgba(0, 0, 0, 0)";
-  context.fillRect(0, 0, size, size);
-  context.font = `${Math.round(size * 0.7)}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`;
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillStyle = "#111827";
-  context.fillText(symbol, size / 2, size / 2);
-
-  const dataUrl = canvas.toDataURL("image/png");
-  faviconCache.set(symbol, dataUrl);
-  return dataUrl;
-}
-
-function isLogoUrl(value) {
-  return typeof value === "string" && (/^https?:\/\//i.test(value) || value.startsWith("data:"));
 }
 
 function render() {
@@ -722,12 +692,6 @@ function createActionCell(type, index) {
   return actions;
 }
 
-function deriveFallbackIcon(name) {
-  if (!name) return "★";
-  const trimmed = name.trim();
-  return trimmed ? trimmed.charAt(0).toUpperCase() : "★";
-}
-
 function showBookmarkCategoryField(value) {
   if (!modalCategoryField || !modalCategoryPlaceholder) return;
   if (!modalCategoryField.isConnected && modalCategoryPlaceholder.parentNode) {
@@ -759,7 +723,7 @@ function hideBookmarkCategoryField() {
 function openEditor(type, index) {
   const fetchLogoButton = document.getElementById("fetch-logo-button");
   if (fetchLogoButton) {
-    // 移除旧的监听器以防重复绑�?
+    // 移除旧的监听器以防重复绑定
     fetchLogoButton.removeEventListener("click", handleFetchLogo);
     fetchLogoButton.addEventListener("click", handleFetchLogo);
   }
@@ -906,39 +870,49 @@ function buildSettingsPayload(settings) {
 }
 
 function updateStateFromResponse(data) {
-  state.apps = normaliseIncoming(data?.apps, "apps");
-  state.bookmarks = normaliseIncoming(data?.bookmarks, "bookmarks");
+  state.apps = normaliseCollectionItems(data?.apps, "apps");
+  state.bookmarks = normaliseCollectionItems(data?.bookmarks, "bookmarks");
   state.settings = normaliseSettingsIncoming(data?.settings);
-  // ⚠️ 关键修复：正确设�?stats
+  // ⚠️ 关键修复：正确设置 stats
   state.stats = {
     siteStartDate: data?.siteStartDate || null,
   };
   applySettingsToInputs(state.settings);
   render();
+  syncSavedSnapshot();
   resetDirty();
 }
 
-function buildAuthHeaders(extra = {}) {
-  return { ...extra };
+async function requestAuthJson(
+  url,
+  { method = "GET", body, unauthorizedMessage = "登录已过期，请重新登录。" } = {}
+) {
+  const options = { method };
+  if (body !== undefined) {
+    options.headers = { "Content-Type": "application/json" };
+    options.body = JSON.stringify(body);
+  }
+
+  const { response, payload } = await fetchJson(url, options);
+
+  if (response.status === 401) {
+    handleUnauthorized(unauthorizedMessage);
+    const error = new Error(unauthorizedMessage);
+    error.isUnauthorized = true;
+    throw error;
+  }
+
+  if (!response.ok) {
+    throw new Error(getPayloadMessage(payload, response.statusText || "请求失败"));
+  }
+
+  return payload;
 }
 
 async function loadData(showStatus = true) {
   try {
-    const response = await fetch(DATA_ENDPOINT, {
-      headers: buildAuthHeaders(),
-    });
-
-    if (response.status === 401) {
-      handleUnauthorized("登录已过期，请重新登录。");
-      return false;
-    }
-
-    if (!response.ok) {
-      throw new Error("加载数据失败");
-    }
-
-    const payload = await response.json();
-    const data = payload && typeof payload === "object" && "data" in payload ? payload.data : payload;
+    const payload = await requestAuthJson(DATA_ENDPOINT);
+    const data = getPayloadData(payload);
 
     updateStateFromResponse(data);
     if (showStatus) {
@@ -946,6 +920,9 @@ async function loadData(showStatus = true) {
     }
     return true;
   } catch (error) {
+    if (error?.isUnauthorized) {
+      return false;
+    }
     console.error("加载数据失败", error);
     setStatus(error.message || "无法加载数据", "error");
     return false;
@@ -985,77 +962,78 @@ async function saveChanges() {
     if (siteNameInput) siteNameInput.focus();
     return;
   }
+  const appOperations = buildCollectionPatchOperations(savedSnapshot.apps, state.apps, "apps");
+  const bookmarkOperations = buildCollectionPatchOperations(
+    savedSnapshot.bookmarks,
+    state.bookmarks,
+    "bookmarks"
+  );
+  const settingsPatch = buildSettingsPatch(savedSnapshot.settings, state.settings);
+  const nextSiteStartDate = normaliseSiteStartDate(state.stats?.siteStartDate);
+  const savedSiteStartDate = normaliseSiteStartDate(savedSnapshot.stats?.siteStartDate);
+  const isSiteStartDateChanged = nextSiteStartDate !== savedSiteStartDate;
 
-  const payload = {
-    apps: state.apps.map((item) => ({
-      id: item.id,
-      name: item.name,
-      url: item.url,
-      description: item.description,
-      icon: item.icon,
-    })),
-    bookmarks: state.bookmarks.map((item) => ({
-      id: item.id,
-      name: item.name,
-      url: item.url,
-      description: item.description,
-      icon: item.icon,
-      category: item.category || "",
-    })),
-    settings: payloadSettings,
-    stats: { // 🆕 添加
-      siteStartDate: state.stats.siteStartDate,
-    },
-  };
+  const hasChanges =
+    appOperations.length > 0 ||
+    bookmarkOperations.length > 0 ||
+    Object.keys(settingsPatch).length > 0 ||
+    isSiteStartDateChanged;
+
+  if (!hasChanges) {
+    resetDirty();
+    setStatus("没有可保存的更改。", "neutral");
+    return;
+  }
 
   try {
-    const response = await fetch(DATA_ENDPOINT, {
-      method: "PUT",
-      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
-      body: JSON.stringify(payload),
-    });
+    if (appOperations.length > 0) {
+      await requestAuthJson(PATCH_APPS_ENDPOINT, {
+        method: "PATCH",
+        body: { operations: appOperations },
+      });
+    }
 
-    if (response.status === 401) {
-      handleUnauthorized("登录已过期，请重新登录。");
+    if (bookmarkOperations.length > 0) {
+      await requestAuthJson(PATCH_BOOKMARKS_ENDPOINT, {
+        method: "PATCH",
+        body: { operations: bookmarkOperations },
+      });
+    }
+
+    if (Object.keys(settingsPatch).length > 0) {
+      await requestAuthJson(PATCH_SETTINGS_ENDPOINT, {
+        method: "PATCH",
+        body: settingsPatch,
+      });
+    }
+
+    if (isSiteStartDateChanged) {
+      await requestAuthJson(DATA_ENDPOINT, {
+        method: "PUT",
+        body: {
+          stats: {
+            siteStartDate: nextSiteStartDate,
+          },
+        },
+      });
+    }
+
+    const restored = await loadData(false);
+    if (!restored) {
+      if (saveButton) saveButton.disabled = false;
       return;
     }
 
-    if (!response.ok) {
-      const message = await extractErrorMessage(response);
-      throw new Error(message || "保存失败");
-    }
-
-    const result = await response.json();
-    const data = result && typeof result === "object" && "data" in result ? result.data : result;
-
-    // The server response is used to update lists with server-generated IDs.
-    // Settings are not updated from the response, as the local state is the source of truth
-    // and the server may not return the full settings object on save.
-    state.apps = normaliseIncoming(data?.apps, "apps");
-    state.bookmarks = normaliseIncoming(data?.bookmarks, "bookmarks");
-    render();
-    resetDirty();
     setStatus("保存成功！", "success");
   } catch (error) {
+    if (error?.isUnauthorized) {
+      return;
+    }
     console.error("保存失败", error);
     setStatus(error.message || "保存失败，请稍后再试。", "error");
     if (saveButton) saveButton.disabled = false;
   }
 }
-
-async function extractErrorMessage(response) {
-  try {
-    const data = await response.json();
-    if (data && typeof data === "object" && "message" in data) {
-      return data.message;
-    }
-  } catch (_error) {
-    // ignore
-  }
-  return response.statusText;
-}
-
-
 
 function handleUnauthorized(message) {
   setStatus(message || "登录状态已失效，正在跳转到登录页...", "error");
@@ -1155,14 +1133,14 @@ async function handlePasswordSubmit(event) {
   let focusCurrentInput = false;
 
   try {
-    const response = await fetch(PASSWORD_ENDPOINT, {
+    const { response, payload } = await fetchJson(PASSWORD_ENDPOINT, {
       method: "POST",
-      headers: buildAuthHeaders({ "Content-Type": "application/json" }),
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ currentPassword: trimmedCurrent, newPassword: newValue }),
     });
 
     if (response.status === 401) {
-      const message = await extractErrorMessage(response);
+      const message = getPayloadMessage(payload, "登录已过期，请重新登录后再修改密码。");
       if (message && message.includes("当前密码")) {
         setPasswordMessage(message, "error");
         setStatus(message, "error");
@@ -1174,7 +1152,7 @@ async function handlePasswordSubmit(event) {
     }
 
     if (!response.ok) {
-      const message = await extractErrorMessage(response);
+      const message = getPayloadMessage(payload, response.statusText);
       throw new Error(message || "密码更新失败");
     }
 
@@ -1216,28 +1194,22 @@ async function handleFetchLogo() {
   setModalError("");
 
   try {
-    const response = await fetch(`/api/fetch-logo?targetUrl=${encodeURIComponent(targetUrl)}`, {
-      headers: buildAuthHeaders(),
-    });
+    const payload = await requestAuthJson(`/api/fetch-logo?targetUrl=${encodeURIComponent(targetUrl)}`);
 
-    if (response.status === 401) {
-      handleUnauthorized("登录已过期，请重新登录。");
-      return;
+    if (!payload?.success) {
+      throw new Error(getPayloadMessage(payload, "获取 Logo 失败"));
     }
 
-    const result = await response.json();
-
-    if (!response.ok || !result.success) {
-      throw new Error(result.message || "获取 Logo 失败");
-    }
-
-    if (result.logoUrl) {
-      modalIconInput.value = result.logoUrl;
+    if (payload.logoUrl) {
+      modalIconInput.value = payload.logoUrl;
       markDirty(); // 标记为有修改
     } else {
       throw new Error("未能找到 Logo");
     }
   } catch (error) {
+    if (error?.isUnauthorized) {
+      return;
+    }
     console.error("获取 Logo 失败:", error);
     setModalError(error.message || "获取 Logo 失败，请稍后重试。");
   } finally {
@@ -1256,7 +1228,7 @@ function bindEvents() {
   });
 
   
-  // 🆕 添加透明度滑块事�?
+  // 🆕 添加透明度滑块事件
   if (siteGlassOpacityInput) {
     siteGlassOpacityInput.addEventListener("input", () => {
       const value = parseInt(siteGlassOpacityInput.value, 10);
@@ -1269,7 +1241,7 @@ function bindEvents() {
     });
   }
 
-  // 🆕 壁纸 URL 输入框事�?
+  // 🆕 壁纸 URL 输入框事件
   if (siteWallpaperUrlInput) {
     siteWallpaperUrlInput.addEventListener("input", () => {
       state.settings.wallpaperUrl = siteWallpaperUrlInput.value.trim();
@@ -1277,18 +1249,18 @@ function bindEvents() {
       setStatus("壁纸 URL 已更新，记得保存。", "neutral");
     });
   }
-  // 🆕 添加开关事件监�?
+  // 🆕 添加开关事件监听
   if (siteUseWallpaperInput) {
     siteUseWallpaperInput.addEventListener("change", () => {
       const isEnabled = siteUseWallpaperInput.checked;
-      // 启用/禁用 URL 输入�?
+      // 启用/禁用 URL 输入框
       if (siteWallpaperUrlInput) {
         siteWallpaperUrlInput.disabled = !isEnabled;
       } 
-      // 更新状�?
+      // 更新状态
       state.settings.useWallpaper = isEnabled;
       markDirty();
-      setStatus(`壁纸�?{isEnabled ? "启用" : "禁用"}，记得保存。`, "neutral");
+      setStatus(`壁纸${isEnabled ? "启用" : "禁用"}，记得保存。`, "neutral");
     });
   }
 
@@ -1393,7 +1365,7 @@ function bindEvents() {
     });
   }
 
-  // 🆕 运行开始日期输入事�?
+  // 🆕 运行开始日期输入事件
   if (siteStartDateInput) {
     siteStartDateInput.addEventListener("input", () => {
       state.stats.siteStartDate = siteStartDateInput.value || null;
@@ -1415,24 +1387,8 @@ function scrollToSection(targetId) {
   targetElement.scrollIntoView({ behavior: "smooth" });
 }
 
-function scrollToTop() {
-  const prefersReducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
-  if (prefersReducedMotion) {
-    window.scrollTo(0, 0);
-    return;
-  }
-  window.scrollTo({ top: 0, behavior: "smooth" });
-}
-
 function handleBackToTopVisibility() {
-  if (!backToTopButton) return;
-  if (window.scrollY > BACK_TO_TOP_THRESHOLD) {
-    if (backToTopButton.hasAttribute("hidden")) {
-      backToTopButton.removeAttribute("hidden");
-    }
-  } else if (!backToTopButton.hasAttribute("hidden")) {
-    backToTopButton.setAttribute("hidden", "");
-  }
+  setBackToTopVisibility(backToTopButton, BACK_TO_TOP_THRESHOLD);
 }
 
 async function initialise() {
@@ -1449,7 +1405,7 @@ async function initialise() {
   applySettingsToInputs(state.settings);
   render();
   resetDirty();
-  setStatus("���ڼ�������...", "neutral");
+  setStatus("正在加载数据...", "neutral");
 
   const success = await loadData(false);
   if (success) {

@@ -13,6 +13,15 @@ kv_namespaces = [
   { binding = "SESSIONS", id = "4d66f25e98f0467b99de14a28a2a9e5d", preview_id = "4d66f25e98f0467b99de14a28a2a9e5d" },
 ]
 
+[durable_objects]
+bindings = [
+  { name = "VISITOR_COUNTER", class_name = "VisitorCounterDO" },
+]
+
+[[migrations]]
+tag = "v1"
+new_classes = ["VisitorCounterDO"]
+
 # Site configuration for static assets
 # This tells Wrangler to upload the contents of the 'public' directory
 # to the __STATIC_CONTENT KV namespace.
