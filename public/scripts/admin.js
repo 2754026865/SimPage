@@ -25,6 +25,7 @@ const modalNameInput = document.getElementById("editor-name");
 const modalUrlInput = document.getElementById("editor-url");
 const modalDescriptionInput = document.getElementById("editor-description");
 const modalIconInput = document.getElementById("editor-icon");
+const fetchLogoButton = document.getElementById("fetch-logo-button");
 const modalCategoryField = document.getElementById("editor-category-field");
 const modalCategoryInput = document.getElementById("editor-category");
 const modalCategoryPlaceholder =
@@ -528,10 +529,71 @@ function renderList(type, container, items) {
   });
   tbody.appendChild(rowsFragment);
   table.appendChild(tbody);
+  bindTableInteractions(table);
 
   scroller.appendChild(table);
   wrapper.appendChild(scroller);
   replaceChildrenSafe(container, wrapper);
+}
+
+function resolveRowContext(row) {
+  if (!row) {
+    return null;
+  }
+  const type = row.dataset.type;
+  const indexRaw = row.dataset.index;
+  const index = Number(indexRaw);
+  if ((type !== "apps" && type !== "bookmarks") || !Number.isInteger(index) || index < 0) {
+    return null;
+  }
+  return { type, index };
+}
+
+function bindTableInteractions(table) {
+  if (!table) {
+    return;
+  }
+
+  table.addEventListener("click", (event) => {
+    const actionButton = event.target.closest("button[data-action]");
+    if (actionButton) {
+      const row = actionButton.closest("tr[data-clickable='true']");
+      const context = resolveRowContext(row);
+      if (!context) {
+        return;
+      }
+      const action = actionButton.dataset.action;
+      if (action === "edit") {
+        openEditor(context.type, context.index);
+      } else if (action === "delete") {
+        handleDelete(context.type, context.index);
+      }
+      return;
+    }
+
+    const row = event.target.closest("tr[data-clickable='true']");
+    const context = resolveRowContext(row);
+    if (!context) {
+      return;
+    }
+    openEditor(context.type, context.index);
+  });
+
+  table.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    if (event.target.closest("button[data-action]")) {
+      return;
+    }
+    const row = event.target.closest("tr[data-clickable='true']");
+    const context = resolveRowContext(row);
+    if (!context) {
+      return;
+    }
+    event.preventDefault();
+    openEditor(context.type, context.index);
+  });
 }
 
 function updateCategorySuggestions() {
@@ -576,6 +638,8 @@ function getTableColumns(type) {
 function buildTableRow(type, item, index, columns) {
   const row = document.createElement("tr");
   row.dataset.clickable = "true";
+  row.dataset.type = type;
+  row.dataset.index = String(index);
   row.tabIndex = 0;
 
   columns.forEach((column) => {
@@ -617,18 +681,6 @@ function buildTableRow(type, item, index, columns) {
     row.appendChild(cell);
   });
 
-  row.addEventListener("click", (event) => {
-    if (event.target.closest("button")) return;
-    openEditor(type, index);
-  });
-
-  row.addEventListener("keydown", (event) => {
-    if ((event.key === "Enter" || event.key === " ") && !event.target.closest("button")) {
-      event.preventDefault();
-      openEditor(type, index);
-    }
-  });
-
   return row;
 }
 
@@ -648,6 +700,16 @@ function createNameCell(type, item, index) {
     const img = document.createElement("img");
     img.src = iconContent;
     img.alt = `${displayName} 图标`;
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.referrerPolicy = "no-referrer";
+    img.addEventListener(
+      "error",
+      () => {
+        iconWrapper.textContent = deriveFallbackIcon(displayName);
+      },
+      { once: true }
+    );
     iconWrapper.appendChild(img);
   } else if (iconContent) {
     iconWrapper.textContent = iconContent.slice(0, 4);
@@ -672,20 +734,18 @@ function createActionCell(type, index) {
   const editButton = document.createElement("button");
   editButton.type = "button";
   editButton.className = "secondary-button";
+  editButton.dataset.action = "edit";
+  editButton.dataset.type = type;
+  editButton.dataset.index = String(index);
   editButton.textContent = "编辑";
-  editButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    openEditor(type, index);
-  });
 
   const deleteButton = document.createElement("button");
   deleteButton.type = "button";
   deleteButton.className = "delete-button";
+  deleteButton.dataset.action = "delete";
+  deleteButton.dataset.type = type;
+  deleteButton.dataset.index = String(index);
   deleteButton.textContent = "删除";
-  deleteButton.addEventListener("click", (event) => {
-    event.stopPropagation();
-    handleDelete(type, index);
-  });
 
   actions.appendChild(editButton);
   actions.appendChild(deleteButton);
@@ -721,12 +781,6 @@ function hideBookmarkCategoryField() {
 }
 
 function openEditor(type, index) {
-  const fetchLogoButton = document.getElementById("fetch-logo-button");
-  if (fetchLogoButton) {
-    // 移除旧的监听器以防重复绑定
-    fetchLogoButton.removeEventListener("click", handleFetchLogo);
-    fetchLogoButton.addEventListener("click", handleFetchLogo);
-  }
   const isNew = typeof index !== "number";
   const reference = isNew ? createBlankItem(type) : state[type][index];
   if (!reference) return;
@@ -1178,7 +1232,6 @@ async function handlePasswordSubmit(event) {
 
 async function handleFetchLogo() {
   if (!modalUrlInput || !modalIconInput) return;
-  const fetchLogoButton = document.getElementById("fetch-logo-button");
   if (!fetchLogoButton) return;
 
   const targetUrl = modalUrlInput.value.trim();
@@ -1308,6 +1361,10 @@ function bindEvents() {
 
   if (siteWeatherCityInput) {
     siteWeatherCityInput.addEventListener("input", handleWeatherInputChange);
+  }
+
+  if (fetchLogoButton) {
+    fetchLogoButton.addEventListener("click", handleFetchLogo);
   }
 
   if (modalForm) {
