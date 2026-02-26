@@ -20,7 +20,7 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["VisitorCounterDO"]
+new_sqlite_classes = ["VisitorCounterDO"]
 
 # Site configuration for static assets
 # This tells Wrangler to upload the contents of the 'public' directory
