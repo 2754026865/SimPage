@@ -777,6 +777,7 @@ function createTile(item) {
   if (descriptionText) {
     description.textContent = descriptionText;
   } else {
+    link.classList.add("tile--compact");
     description.classList.add("is-empty");
     description.setAttribute("aria-hidden", "true");
   }
