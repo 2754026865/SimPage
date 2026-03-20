@@ -46,6 +46,7 @@ const backToTopButton = document.getElementById("back-to-top");
 const footerElement = document.getElementById("site-footer");
 const footerContentElement = document.getElementById("site-footer-content");
 const footerMetaElement = document.getElementById("site-footer-meta");
+const footerInnerElement = footerElement ? footerElement.querySelector(".site-footer-inner") : null;
 const runningDaysElement = document.getElementById("site-running-days");
 const faviconLink = document.getElementById("site-favicon");
 
@@ -561,17 +562,12 @@ function updateFooter(rawContent) {
   refreshFooterVisibility();
 }
 
-function ensureRunningDaysFloating() {
+function syncRunningDaysInline() {
   if (!footerMetaElement) return;
 
-  if (!footerMetaElement.classList.contains("is-fixed")) {
-    footerMetaElement.classList.add("is-fixed");
-  }
-  if (footerMetaElement.hidden) {
-    footerMetaElement.hidden = false;
-  }
-  if (footerMetaElement.parentElement !== document.body) {
-    document.body.appendChild(footerMetaElement);
+  footerMetaElement.classList.remove("is-fixed");
+  if (footerInnerElement && footerMetaElement.parentElement !== footerInnerElement) {
+    footerInnerElement.appendChild(footerMetaElement);
   }
 }
 
@@ -599,7 +595,8 @@ function updateRunningDays(runningDays, siteStartDate) {
   runningDaysElement.textContent = hasValue ? days : 0;
 
   hasRunningDaysValue = hasValue;
-  ensureRunningDaysFloating();
+  syncRunningDaysInline();
+  footerMetaElement.hidden = !hasValue;
 
   refreshFooterVisibility();
 }
@@ -608,8 +605,7 @@ function updateRunningDays(runningDays, siteStartDate) {
 function refreshFooterVisibility() {
   if (!footerElement) return;
   const hasContent = Boolean(footerContentValue);
-  const isRunningDaysFloating = footerMetaElement?.classList?.contains("is-fixed");
-  const shouldShowFooter = hasContent || (!isRunningDaysFloating && hasRunningDaysValue);
+  const shouldShowFooter = hasContent || hasRunningDaysValue;
   footerElement.hidden = !shouldShowFooter;
 }
 
@@ -1276,7 +1272,7 @@ async function initialise() {
   updateFavicon(DEFAULT_SITE_SETTINGS.siteLogo, DEFAULT_SITE_SETTINGS.siteName);
   updateFooter(DEFAULT_SITE_SETTINGS.footer);
   applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity);
-  ensureRunningDaysFloating();
+  syncRunningDaysInline();
 
 
   showCollection(activeCollection);

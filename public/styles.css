@@ -755,6 +755,9 @@ body.dark-theme .search-select select option {
   background: none;
   border: none;
   box-shadow: none;
+  position: relative;
+  z-index: 2;
+  isolation: isolate;
 }
 
 .site-footer[hidden] {
@@ -770,29 +773,11 @@ body.dark-theme .search-select select option {
 .site-footer-meta {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
   gap: 0.4rem;
   font-size: 0.85rem;
   color: rgba(17, 24, 39, 0.65);
-}
-
-.site-footer-meta.is-fixed {
-  position: fixed;
-  bottom: clamp(1.2rem, 4vw, 2.2rem);
-  left: clamp(1.2rem, 4vw, 2.2rem);
-  z-index: 1400;
-  padding: 0.45rem 0.9rem;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, calc(var(--glass-opacity, 0.55) + 0.1));
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.14);
-  backdrop-filter: blur(18px) saturate(180%);
-  -webkit-backdrop-filter: blur(18px) saturate(180%);
-}
-
-body.dark-theme .site-footer-meta.is-fixed {
-  background: rgba(44, 44, 46, 0.85);
-  border-color: transparent;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35);
 }
 
 .site-footer-meta[hidden] {
