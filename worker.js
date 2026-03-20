@@ -716,7 +716,7 @@ async function incrementVisitorCountAndReadData(env, ctx) {
 }
 
 // =================================================================================
-// Data Normalization and Sanitization (Copied and adapted from server.js)
+// Data normalization and sanitization helpers
 // =================================================================================
 
 function sanitiseData(fullData) {
