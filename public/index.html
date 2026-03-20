@@ -2,8 +2,21 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <title>Page</title>
+    <link rel="dns-prefetch" href="//fonts.font.im" />
+    <link rel="dns-prefetch" href="//bing.img.run" />
+    <link rel="dns-prefetch" href="//v1.hitokoto.cn" />
+    <link rel="preconnect" href="https://fonts.font.im" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.font.im/css2?family=LXGW+WenKai&display=swap"
+      media="print"
+      onload="this.media='all'"
+    />
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.font.im/css2?family=LXGW+WenKai&display=swap" />
+    </noscript>
     <link rel="icon" id="site-favicon" href="/simpage-logo.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="/styles.css" />
     <script type="module" src="/scripts/main.js" defer></script>
@@ -163,6 +176,9 @@
           name="query"
           placeholder="搜索网页、应用或书签..."
           autocomplete="off"
+          autocapitalize="off"
+          spellcheck="false"
+          enterkeyhint="search"
         />
         <button type="submit">搜索</button>
       </div>
