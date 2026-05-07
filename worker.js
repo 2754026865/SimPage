@@ -50,7 +50,6 @@ router.get("/api/data", handleGetData);
 router.get("/api/weather", handleGetWeather);
 router.get("/api/admin/data", requireAuth, handleGetAdminData);
 router.put("/api/admin/data", requireAuth, handleDataUpdate);
-router.put("/api/data", requireAuth, handleDataUpdate); // Legacy endpoint
 router.patch("/api/admin/apps", requireAuth, handlePatchApps);
 router.patch("/api/admin/bookmarks", requireAuth, handlePatchBookmarks);
 router.patch("/api/admin/settings", requireAuth, handlePatchSettings);
@@ -153,20 +152,6 @@ async function serveStatic(request, env, ctx, forcePath) {
   }
 
   try {
-    // Intercept requests for static data files and serve them from KV
-    if (url.pathname.startsWith("/data/")) {
-      const key = url.pathname.substring(1); // remove leading '/'
-      const object = await env.__STATIC_CONTENT.get(key, { type: "arrayBuffer" });
-      if (object === null) {
-        return new Response("Not found", { status: 404 });
-      }
-      const headers = {
-        "content-type": "application/json;charset=UTF-8",
-        "cache-control": "public, max-age=3600", // Cache for 1 hour
-      };
-      return new Response(object, { headers });
-    }
-
     const asset = await getAssetFromKV(
       {
         request,
@@ -179,7 +164,6 @@ async function serveStatic(request, env, ctx, forcePath) {
     );
     return asset;
   } catch (e) {
-    // 🆕 只对根路径做 fallback，移除 isHTMLRequest 判断
     const currentUrl = new URL(request.url);
     const isRoot = currentUrl.pathname === "/";
 
@@ -200,8 +184,7 @@ async function serveStatic(request, env, ctx, forcePath) {
         return new Response("Not Found", { status: 404 });
       }
     }
-    
-    // 🆕 其他所有路径返回 404
+
     return new Response("Not Found", { status: 404 });
   }
 }

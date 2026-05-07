@@ -28,8 +28,3 @@ export function getPayloadData(payload) {
   }
   return payload;
 }
-
-export async function extractErrorMessage(response) {
-  const payload = await parseJsonSafely(response, null);
-  return getPayloadMessage(payload, response.statusText);
-}
