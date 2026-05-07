@@ -12,3 +12,4 @@ dist/
 # Editor directories and files
 .idea/
 .vscode/
+.claude/

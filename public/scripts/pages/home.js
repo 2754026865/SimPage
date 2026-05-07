@@ -1,6 +1,6 @@
-import { renderMarkdown } from "./markdown.js";
-import { formatLunar } from "./lunar.js"; // 🆕 导入农历工具
-import "./theme-toggle.js";
+import { renderMarkdown } from "../lib/markdown.js";
+import { formatLunar } from "../lib/lunar.js"; // 🆕 导入农历工具
+import "../features/theme.js";
 import {
   createFaviconController,
   deriveFallbackIcon,
@@ -9,13 +9,13 @@ import {
   scrollToTop as sharedScrollToTop,
   setBackToTopVisibility,
   setDocumentTitle,
-} from "./shared/ui-utils.js";
+} from "../lib/ui.js";
 import {
   normaliseCollectionItems,
   normaliseWeatherSettingsForRuntime,
   normalizeUrl,
-} from "./shared/data-utils.js";
-import { fetchJson, getPayloadData, getPayloadMessage } from "./shared/api-utils.js";
+} from "../lib/data.js";
+import { fetchJson, getPayloadData, getPayloadMessage } from "../lib/api.js";
 // 🆕 天气切换间隔
 const WEATHER_ROTATION_INTERVAL = 3000;
 const siteNameElement = document.getElementById("site-name");

@@ -1,4 +1,4 @@
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdown } from "../lib/markdown.js";
 import {
   createFaviconController,
   deriveFallbackIcon,
@@ -7,9 +7,9 @@ import {
   scrollToTop as sharedScrollToTop,
   setBackToTopVisibility,
   setDocumentTitle,
-} from "./shared/ui-utils.js";
-import { fetchJson, getPayloadData, getPayloadMessage } from "./shared/api-utils.js";
-import { normaliseCollectionItems, normaliseWeatherSettingsForEditor } from "./shared/data-utils.js";
+} from "../lib/ui.js";
+import { fetchJson, getPayloadData, getPayloadMessage } from "../lib/api.js";
+import { normaliseCollectionItems, normaliseWeatherSettingsForEditor } from "../lib/data.js";
 
 const appsEditor = document.getElementById("apps-editor");
 const bookmarksEditor = document.getElementById("bookmarks-editor");

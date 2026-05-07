@@ -1,4 +1,4 @@
-import { fetchJson, getPayloadMessage } from "./shared/api-utils.js";
+import { fetchJson, getPayloadMessage } from "../lib/api.js";
 
 const LOGIN_ENDPOINT = "/api/login";
 
