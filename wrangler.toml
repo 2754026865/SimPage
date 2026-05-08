@@ -16,11 +16,16 @@ kv_namespaces = [
 [durable_objects]
 bindings = [
   { name = "VISITOR_COUNTER", class_name = "VisitorCounterDO" },
+  { name = "LOGIN_RATE_LIMIT", class_name = "LoginRateLimitDO" },
 ]
 
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["VisitorCounterDO"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["LoginRateLimitDO"]
 
 # Site configuration for static assets
 # This tells Wrangler to upload the contents of the 'public' directory

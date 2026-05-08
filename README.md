@@ -84,6 +84,8 @@ npm run deploy
 
 - `ADMIN_PASSWORD`：后台初始密码，必须通过 `wrangler secret put` 配置。
 
+> 安全说明：`wrangler.toml` 中的 KV `id` 与 Durable Object 绑定信息**不是机密**，可以随仓库公开提交。真正的机密是你的 Cloudflare 账户 API Token / `ADMIN_PASSWORD`：前者请通过 CI 的 secrets 注入，后者通过 `wrangler secret put` 写入，**永远不要写入仓库**。
+
 ## 数据管理
 
 - `SIMPAGE_DATA`：站点设置、应用、书签等核心业务数据。

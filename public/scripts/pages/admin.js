@@ -1272,6 +1272,14 @@ async function handleFetchLogo() {
 }
 
 function bindEvents() {
+  // isDirty 状态下离开页面前弹原生确认,防误关
+  window.addEventListener("beforeunload", (event) => {
+    if (isDirty) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+  });
+
   addButtons.forEach((button) => {
     button.addEventListener("click", () => {
       const target = button.dataset.target;

@@ -36,10 +36,22 @@ const VISITOR_COUNTER_DO_NAME = "global";
 const VISITOR_COUNTER_STORAGE_KEY = "count";
 
 const SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours in seconds
+const SESSION_REVOKED_MARKER = "revoked";
+const SESSION_REVOKED_TTL_SECONDS = 60; // 覆盖 KV 最终一致性窗口
 const AUTH_HEADER_PREFIX = "Bearer ";
 const SESSION_COOKIE_NAME = "simpage_session";
+const VISITOR_COOKIE_NAME = "simpage_visitor";
+const VISITOR_COOKIE_MAX_AGE = 60 * 60; // 1 hour
 const COOKIE_PATH = "/";
 const COOKIE_MAX_AGE = SESSION_TTL_SECONDS;
+const MAX_PASSWORD_LENGTH = 256;
+const LOGIN_FAIL_THRESHOLD = 5;
+const LOGIN_LOCK_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+const LOGIN_RATE_LIMIT_DO_NAME = "global";
+const PBKDF2_ITERATIONS_LEGACY = 100000;
+const PBKDF2_ITERATIONS_CURRENT = 600000;
+const PBKDF2_ALGO_LEGACY = "pbkdf2-sha256-100k";
+const PBKDF2_ALGO_CURRENT = "pbkdf2-sha256-600k";
 
 // =================================================================================
 // API Routes
@@ -62,12 +74,17 @@ router.post("/api/logout", handleLogout);
 // =================================================================================
 
 // 登录页面路由
-router.get("/login", (request, env, ctx) => serveStatic(request, env, ctx, "/login.html"));
+router.get("/login", async (request, env, ctx) => {
+  const response = await serveStatic(request, env, ctx, "/login.html");
+  return withNoStore(response);
+});
 router.get("/login/", (request) => redirectWithBase(request, "/login", 301));
+router.get("/login.html", (request) => redirectWithBase(request, "/login", 301));
 
 // 后台管理页面 - 需要验证 token
 router.get("/admin", handleAdminPage);
 router.get("/admin/", (request) => redirectWithBase(request, "/admin", 301));
+router.get("/admin.html", (request) => redirectWithBase(request, "/admin", 301));
 
 // Fallback for all other GET requests to serve static assets or index.html
 router.get("*", (request, env, ctx) => serveStatic(request, env, ctx));
@@ -79,17 +96,63 @@ router.all("*", () => new Response("Not Found", { status: 404 }));
 // Main Fetch Handler
 // =================================================================================
 
+const SECURITY_CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline' https://fonts.font.im",
+  "img-src 'self' data: https:",
+  "font-src 'self' https://fonts.font.im data:",
+  "connect-src 'self' https://v1.hitokoto.cn https://geocoding-api.open-meteo.com https://api.open-meteo.com",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
+function applySecurityHeaders(response) {
+  if (!response) return response;
+  // 重定向(3xx)与 304 不附加 CSP,避免破坏头部不可变性
+  const status = response.status;
+  if (status >= 300 && status < 400) {
+    return response;
+  }
+  try {
+    const headers = new Headers(response.headers);
+    if (!headers.has("X-Content-Type-Options")) {
+      headers.set("X-Content-Type-Options", "nosniff");
+    }
+    if (!headers.has("Referrer-Policy")) {
+      headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    }
+    if (!headers.has("Permissions-Policy")) {
+      headers.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+    }
+    if (!headers.has("Content-Security-Policy")) {
+      headers.set("Content-Security-Policy", SECURITY_CSP);
+    }
+    return new Response(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers,
+    });
+  } catch (_error) {
+    return response;
+  }
+}
+
 export default {
   async fetch(request, env, ctx) {
     try {
-      return await router.handle(request, env, ctx);
+      const response = await router.handle(request, env, ctx);
+      return applySecurityHeaders(response);
     } catch (error) {
       console.error("Unhandled error:", error);
       const errorResponse = buildErrorResponse(error, env);
-      return new Response(JSON.stringify(errorResponse, null, 2), {
-        status: 500,
-        headers: { "Content-Type": "application/json;charset=UTF-8" },
-      });
+      return applySecurityHeaders(
+        new Response(JSON.stringify(errorResponse, null, 2), {
+          status: 500,
+          headers: { "Content-Type": "application/json;charset=UTF-8" },
+        })
+      );
     }
   },
 };
@@ -136,6 +199,48 @@ export class VisitorCounterDO {
       return seed;
     }
     return 0;
+  }
+}
+
+export class LoginRateLimitDO {
+  constructor(state) {
+    this.state = state;
+  }
+
+  async fetch(request) {
+    const url = new URL(request.url);
+    const ip = url.searchParams.get("ip") || "unknown";
+    const now = Date.now();
+    const stored = (await this.state.storage.get(ip)) || { fails: 0, lockedUntil: 0 };
+
+    // 锁已过期则重置
+    if (stored.lockedUntil > 0 && stored.lockedUntil <= now) {
+      stored.fails = 0;
+      stored.lockedUntil = 0;
+    }
+
+    if (url.pathname === "/check") {
+      const locked = stored.lockedUntil > now;
+      return jsonSuccess({ locked, retryAfterMs: locked ? stored.lockedUntil - now : 0 });
+    }
+
+    if (url.pathname === "/fail") {
+      stored.fails += 1;
+      if (stored.fails >= LOGIN_FAIL_THRESHOLD) {
+        stored.lockedUntil = now + LOGIN_LOCK_DURATION_MS;
+        stored.fails = 0;
+      }
+      await this.state.storage.put(ip, stored);
+      const locked = stored.lockedUntil > now;
+      return jsonSuccess({ locked, retryAfterMs: locked ? stored.lockedUntil - now : 0 });
+    }
+
+    if (url.pathname === "/success") {
+      await this.state.storage.delete(ip);
+      return jsonSuccess({});
+    }
+
+    return new Response("Not Found", { status: 404 });
   }
 }
 
@@ -200,10 +305,23 @@ async function serveStatic(request, env, ctx, forcePath) {
  */
 async function handleAdminPage(request, env, ctx) {
   const session = await resolveSession(request, env);
-  if (session.isValid) {
-    return serveStatic(request, env, ctx, "/admin.html");
+  if (!session.isValid) {
+    return redirectWithBase(request, "/login", 302);
   }
-  return redirectWithBase(request, "/login", 302);
+  const response = await serveStatic(request, env, ctx, "/admin.html");
+  return withNoStore(response);
+}
+
+function withNoStore(response) {
+  if (!response) return response;
+  const headers = new Headers(response.headers);
+  headers.set("Cache-Control", "no-store, must-revalidate");
+  headers.set("Pragma", "no-cache");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
 }
 
 function redirectWithBase(request, pathname, status = 302) {
@@ -213,11 +331,23 @@ function redirectWithBase(request, pathname, status = 302) {
 
 
 
-async function handleLogin(request, env) {
+async function handleLogin(request, env, ctx) {
   const body = await request.json().catch(() => null);
   const password = typeof body?.password === "string" ? body.password : "";
   if (!password) {
     return jsonFailure("请输入密码。", 400);
+  }
+  if (password.length > MAX_PASSWORD_LENGTH) {
+    return jsonFailure("密码长度超出限制。", 400);
+  }
+
+  const clientIp = getClientIp(request);
+  const lockState = await callLoginRateLimit(env, "/check", clientIp);
+  if (lockState.locked) {
+    const retryAfterSec = Math.max(1, Math.ceil(lockState.retryAfterMs / 1000));
+    const response = jsonFailure("尝试次数过多,请稍后再试。", 429);
+    response.headers.set("Retry-After", String(retryAfterSec));
+    return response;
   }
 
   const fullData = await readFullDataFresh(env);
@@ -233,9 +363,50 @@ async function handleLogin(request, env) {
     await writeFullData(env, fullData);
   }
 
-  const isMatch = await verifyPassword(password, admin.passwordSalt, admin.passwordHash);
+  const isMatch = await verifyPassword(
+    password,
+    admin.passwordSalt,
+    admin.passwordHash,
+    admin.passwordHashAlgo
+  );
   if (!isMatch) {
+    const failState = await callLoginRateLimit(env, "/fail", clientIp);
+    if (failState.locked) {
+      const retryAfterSec = Math.max(1, Math.ceil(failState.retryAfterMs / 1000));
+      const response = jsonFailure("尝试次数过多,请稍后再试。", 429);
+      response.headers.set("Retry-After", String(retryAfterSec));
+      return response;
+    }
     return jsonFailure("密码错误。", 401);
+  }
+
+  // 登录成功:清除失败计数(异步,不阻塞响应)
+  if (hasLoginRateLimitBinding(env)) {
+    const clearTask = callLoginRateLimit(env, "/success", clientIp);
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(clearTask);
+    } else {
+      void clearTask;
+    }
+  }
+
+  // 旧算法登录成功后,异步升级到当前算法,不阻塞响应
+  if (admin.passwordHashAlgo !== PBKDF2_ALGO_CURRENT) {
+    const upgradeTask = (async () => {
+      try {
+        await commitFullData(env, async (current) => {
+          const next = await createAdminCredentialsFromPassword(password);
+          return { ...current, admin: next };
+        });
+      } catch (error) {
+        console.error("Auto-upgrade password hash failed:", error);
+      }
+    })();
+    if (ctx && typeof ctx.waitUntil === "function") {
+      ctx.waitUntil(upgradeTask);
+    } else {
+      void upgradeTask;
+    }
   }
 
   const token = generateToken();
@@ -248,8 +419,27 @@ async function handleLogin(request, env) {
 
 async function handleGetData(request, env, ctx) {
   try {
-    const data = await incrementVisitorCountAndReadData(env, ctx);
-    return jsonResponse(data);
+    const cookies = parseCookies(request);
+    const isReturningVisitor = Boolean(cookies[VISITOR_COOKIE_NAME]);
+
+    let data;
+    if (isReturningVisitor) {
+      // 1 小时内同一浏览器只读不增,避免刷新刷量
+      const fullData = await readFullData(env);
+      data = sanitiseData(fullData);
+      data.visitorCount = await getPersistedVisitorCount(
+        env,
+        fullData.stats?.visitorCount || DEFAULT_STATS.visitorCount
+      );
+    } else {
+      data = await incrementVisitorCountAndReadData(env, ctx);
+    }
+
+    const response = jsonResponse(data);
+    if (!isReturningVisitor) {
+      response.headers.set("Set-Cookie", buildVisitorCookie());
+    }
+    return response;
   } catch (error) {
     console.error("Error in handleGetData:", error);
     return jsonResponse(buildErrorResponse(error, env, "Error fetching data"), 500);
@@ -318,40 +508,41 @@ async function handleDataUpdate(request, env) {
       return jsonFailure("请求数据不能为空。", 400);
     }
 
-    const existing = await readFullDataFresh(env);
-    const settingsInput = body.settings ?? existing.settings;
-    const appsInput = Array.isArray(body.apps) ? body.apps : existing.apps;
-    const bookmarksInput = Array.isArray(body.bookmarks) ? body.bookmarks : existing.bookmarks;
+    const updated = await commitFullData(env, async (existing) => {
+      const settingsInput = body.settings ?? existing.settings;
+      const appsInput = Array.isArray(body.apps) ? body.apps : existing.apps;
+      const bookmarksInput = Array.isArray(body.bookmarks) ? body.bookmarks : existing.bookmarks;
 
-    const normalisedApps = normaliseCollection(appsInput, { label: "应用", type: "apps" });
-    const normalisedBookmarks = normaliseCollection(bookmarksInput, { label: "书签", type: "bookmarks" });
-    const normalisedSettings = normaliseSettingsInput(settingsInput);
+      const normalisedApps = normaliseCollection(appsInput, { label: "应用", type: "apps" });
+      const normalisedBookmarks = normaliseCollection(bookmarksInput, { label: "书签", type: "bookmarks" });
+      const normalisedSettings = normaliseSettingsInput(settingsInput);
 
-    const persistedVisitorCount = await getPersistedVisitorCount(
-      env,
-      existing.stats?.visitorCount || DEFAULT_STATS.visitorCount
-    );
+      const persistedVisitorCount = await getPersistedVisitorCount(
+        env,
+        existing.stats?.visitorCount || DEFAULT_STATS.visitorCount
+      );
 
-    const normalisedStats = {
-      visitorCount: persistedVisitorCount,
-      siteStartDate:
-        typeof body.stats?.siteStartDate === "string"
-          ? body.stats.siteStartDate
-          : existing.stats?.siteStartDate || null,
-    };
+      const normalisedStats = {
+        visitorCount: persistedVisitorCount,
+        siteStartDate:
+          typeof body.stats?.siteStartDate === "string"
+            ? body.stats.siteStartDate
+            : existing.stats?.siteStartDate || null,
+      };
 
-    const payload = {
-      settings: normalisedSettings,
-      apps: normalisedApps,
-      bookmarks: normalisedBookmarks,
-      stats: normalisedStats,
-      admin: existing.admin,
-    };
-
-    await writeFullData(env, payload);
-    return jsonSuccess({ data: sanitiseData(payload) });
+      return {
+        ...existing,
+        settings: normalisedSettings,
+        apps: normalisedApps,
+        bookmarks: normalisedBookmarks,
+        stats: normalisedStats,
+        admin: existing.admin,
+      };
+    });
+    return jsonSuccess({ data: sanitiseData(updated) });
   } catch (error) {
-    return jsonFailure(error?.message || "数据更新失败。", 400);
+    const status = error?.statusCode || 400;
+    return jsonFailure(error?.message || "数据更新失败。", status);
   }
 }
 
@@ -379,26 +570,24 @@ async function patchCollectionData(request, env, { key, type, label }) {
       return jsonFailure("请求数据不能为空。", 400);
     }
 
-    const fullData = await readFullDataFresh(env);
-    const source = Array.isArray(fullData[key]) ? fullData[key] : [];
-    const collection = normaliseCollection(source, { label, type });
-
-    applyCollectionPatchOperations(collection, operations, { type, label });
-
-    const payload = {
-      ...fullData,
-      [key]: collection,
-    };
-
-    await writeFullData(env, payload);
-    const data = sanitiseData(payload);
+    const updated = await commitFullData(env, async (fullData) => {
+      const source = Array.isArray(fullData[key]) ? fullData[key] : [];
+      const collection = normaliseCollection(source, { label, type });
+      applyCollectionPatchOperations(collection, operations, { type, label });
+      return {
+        ...fullData,
+        [key]: collection,
+      };
+    });
+    const data = sanitiseData(updated);
     return jsonSuccess({
       data: {
         [key]: data[key],
       },
     });
   } catch (error) {
-    return jsonFailure(error?.message || `${label} 增量更新失败。`, 400);
+    const status = error?.statusCode || 400;
+    return jsonFailure(error?.message || `${label} 增量更新失败。`, status);
   }
 }
 
@@ -423,36 +612,36 @@ async function handlePatchSettings(request, env) {
       return jsonFailure("请求数据不能为空。", 400);
     }
 
-    const fullData = await readFullDataFresh(env);
-    const existingSettings =
-      fullData.settings && typeof fullData.settings === "object"
-        ? fullData.settings
-        : createDefaultSettings();
-    const mergedSettings = { ...existingSettings, ...patch };
+    const updated = await commitFullData(env, async (fullData) => {
+      const existingSettings =
+        fullData.settings && typeof fullData.settings === "object"
+          ? fullData.settings
+          : createDefaultSettings();
+      const mergedSettings = { ...existingSettings, ...patch };
 
-    if (Object.prototype.hasOwnProperty.call(patch, "weather")) {
-      mergedSettings.weather = patch.weather;
-    } else if (Object.prototype.hasOwnProperty.call(patch, "weatherLocation")) {
-      mergedSettings.weather = patch.weatherLocation;
-    } else {
-      mergedSettings.weather = existingSettings.weather ?? existingSettings.weatherLocation;
-    }
+      if (Object.prototype.hasOwnProperty.call(patch, "weather")) {
+        mergedSettings.weather = patch.weather;
+      } else if (Object.prototype.hasOwnProperty.call(patch, "weatherLocation")) {
+        mergedSettings.weather = patch.weatherLocation;
+      } else {
+        mergedSettings.weather = existingSettings.weather ?? existingSettings.weatherLocation;
+      }
 
-    const normalisedSettings = normaliseSettingsInput(mergedSettings);
-    const payload = {
-      ...fullData,
-      settings: normalisedSettings,
-    };
-
-    await writeFullData(env, payload);
-    const data = sanitiseData(payload);
+      const normalisedSettings = normaliseSettingsInput(mergedSettings);
+      return {
+        ...fullData,
+        settings: normalisedSettings,
+      };
+    });
+    const data = sanitiseData(updated);
     return jsonSuccess({
       data: {
         settings: data.settings,
       },
     });
   } catch (error) {
-    return jsonFailure(error?.message || "站点设置增量更新失败。", 400);
+    const status = error?.statusCode || 400;
+    return jsonFailure(error?.message || "站点设置增量更新失败。", status);
   }
 }
 
@@ -465,35 +654,55 @@ async function handlePasswordUpdate(request, env) {
   if (!currentPassword) {
     return jsonFailure("请输入当前密码。", 400);
   }
+  if (currentPassword.length > MAX_PASSWORD_LENGTH) {
+    return jsonFailure("密码长度超出限制。", 400);
+  }
   const cleanNewPassword = newPasswordRaw.trim();
   if (!cleanNewPassword || cleanNewPassword.length < 6) {
     return jsonFailure("新密码长度至少为 6 位。", 400);
   }
-
-  const fullData = await readFullDataFresh(env);
-  const admin = fullData.admin;
-  if (!admin || !admin.passwordHash || !admin.passwordSalt) {
-    return jsonFailure("密码修改功能暂不可用。", 500);
+  if (cleanNewPassword.length > MAX_PASSWORD_LENGTH) {
+    return jsonFailure(`新密码长度不能超过 ${MAX_PASSWORD_LENGTH} 位。`, 400);
   }
 
-  const isMatch = await verifyPassword(currentPassword, admin.passwordSalt, admin.passwordHash);
-  if (!isMatch) {
-    return jsonFailure("当前密码不正确。", 401);
+  try {
+    await commitFullData(env, async (fullData) => {
+      const admin = fullData.admin;
+      if (!admin || !admin.passwordHash || !admin.passwordSalt) {
+        throw Object.assign(new Error("密码修改功能暂不可用。"), { statusCode: 500 });
+      }
+
+      const isMatch = await verifyPassword(
+        currentPassword,
+        admin.passwordSalt,
+        admin.passwordHash,
+        admin.passwordHashAlgo
+      );
+      if (!isMatch) {
+        throw Object.assign(new Error("当前密码不正确。"), { statusCode: 401 });
+      }
+
+      const isSameAsOld = await verifyPassword(
+        cleanNewPassword,
+        admin.passwordSalt,
+        admin.passwordHash,
+        admin.passwordHashAlgo
+      );
+      if (isSameAsOld) {
+        throw Object.assign(new Error("新密码不能与当前密码相同。"), { statusCode: 400 });
+      }
+
+      const nextAdmin = await createAdminCredentialsFromPassword(cleanNewPassword);
+      return {
+        ...fullData,
+        admin: nextAdmin,
+      };
+    });
+    return jsonSuccess({ message: "密码已更新，下次登录请使用新密码。" });
+  } catch (error) {
+    const status = error?.statusCode || 500;
+    return jsonFailure(error?.message || "密码更新失败。", status);
   }
-
-  const isSameAsOld = await verifyPassword(cleanNewPassword, admin.passwordSalt, admin.passwordHash);
-  if (isSameAsOld) {
-    return jsonFailure("新密码不能与当前密码相同。", 400);
-  }
-
-  const { passwordHash, passwordSalt } = await hashPassword(cleanNewPassword);
-  const updatedData = {
-    ...fullData,
-    admin: { passwordHash, passwordSalt },
-  };
-
-  await writeFullData(env, updatedData);
-  return jsonSuccess({ message: "密码已更新，下次登录请使用新密码。" });
 }
 
 /**
@@ -555,16 +764,28 @@ function handleFetchLogo(request, env) {
       return jsonFailure("缺少有效的 targetUrl 参数", 400);
     }
 
-    // 移除协议 (http, https)
-    let domain = targetUrl.trim().replace(/^(https?:\/\/)?/, "");
-    // 移除第一个斜杠后的所有内容（路径、查询参数、哈希）
-    domain = domain.split("/")[0];
-
-    if (!domain) {
-      return jsonFailure("无法从链接中提取域名。", 400);
+    // 优先用 URL 解析,拿不到再回退到正则提取
+    let domain = "";
+    const trimmed = targetUrl.trim();
+    try {
+      const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+      const parsed = new URL(candidate);
+      domain = parsed.hostname;
+    } catch (_error) {
+      domain = trimmed.replace(/^(https?:\/\/)?/i, "").split("/")[0];
     }
 
-    const logoUrl = `https://icon.ooo/${domain}`;
+    domain = (domain || "").trim().toLowerCase();
+    // 严格校验:仅允许字母数字、点、连字符;长度合理
+    if (!domain || domain.length > 253 || !/^[a-z0-9.-]+$/.test(domain)) {
+      return jsonFailure("无效的域名。", 400);
+    }
+    // 必须含至少一个点(过滤纯主机名/localhost)
+    if (!domain.includes(".") || domain.startsWith(".") || domain.endsWith(".")) {
+      return jsonFailure("无效的域名。", 400);
+    }
+
+    const logoUrl = `https://icon.ooo/${encodeURIComponent(domain)}`;
     return jsonSuccess({ logoUrl });
 
   } catch (error) {
@@ -575,7 +796,11 @@ function handleFetchLogo(request, env) {
 async function handleLogout(request, env) {
   const token = getSessionTokenFromRequest(request);
   if (token) {
-    await env.SESSIONS.delete(token);
+    // 用 revoked 标记覆盖原 active 值,在 KV 一致性窗口期内仍能识别为失效。
+    // 60 秒后自动过期清除,不占用长期空间。
+    await env.SESSIONS.put(token, SESSION_REVOKED_MARKER, {
+      expirationTtl: SESSION_REVOKED_TTL_SECONDS,
+    });
   }
   const response = jsonSuccess();
   response.headers.set("Set-Cookie", buildClearSessionCookie());
@@ -649,6 +874,48 @@ async function writeFullData(env, fullData) {
   updateFullDataCache(fullData);
 }
 
+/**
+ * 乐观锁写入:基于 _version 字段在写前再次校验,
+ * 中间被其他会话改过则重试,达到上限抛 409。
+ * 不能完全消除 KV 最终一致性窗口,但能在常见管理员单人场景下避免静默丢失更新。
+ */
+async function commitFullData(env, mutator, retries = 3) {
+  let lastConflict = null;
+  for (let attempt = 0; attempt < retries; attempt++) {
+    const current = await readFullDataFresh(env);
+    const baseVersion = Number.isFinite(current?._version) ? current._version : 0;
+
+    const updated = await mutator(current);
+    if (!updated || typeof updated !== "object") {
+      throw new Error("写入失败:数据格式不正确。");
+    }
+
+    const verifyRaw = await env.SIMPAGE_DATA.get(DATA_KEY);
+    let verifyVersion = 0;
+    if (verifyRaw) {
+      try {
+        const parsed = JSON.parse(verifyRaw);
+        verifyVersion = Number.isFinite(parsed?._version) ? parsed._version : 0;
+      } catch (_error) {
+        verifyVersion = 0;
+      }
+    }
+
+    if (verifyVersion !== baseVersion) {
+      lastConflict = Object.assign(
+        new Error("数据已被其他会话修改,请刷新后重试。"),
+        { statusCode: 409 }
+      );
+      continue;
+    }
+
+    updated._version = baseVersion + 1;
+    await writeFullData(env, updated);
+    return updated;
+  }
+  throw lastConflict || new Error("写入失败,请重试。");
+}
+
 async function incrementVisitorCountAndReadData(env, ctx) {
   const fullData = await readFullData(env);
   const sanitised = sanitiseData(fullData);
@@ -669,32 +936,14 @@ async function incrementVisitorCountAndReadData(env, ctx) {
       updateFullDataCache(cachedData);
       return sanitised;
     } catch (error) {
-      console.error("Visitor counter DO increment failed, fallback to KV:", error);
+      console.error("Visitor counter DO increment failed, returning last-known count:", error);
     }
   }
 
-  const nextVisitorCount = currentCount + 1;
-  sanitised.visitorCount = nextVisitorCount;
-
-  const updatedData = {
-    ...fullData,
-    stats: { ...fullData.stats, visitorCount: nextVisitorCount },
-  };
-
-  // Keep local cache ahead of async KV write to reduce stale reads in hot path.
-  updateFullDataCache(updatedData);
-
-  // Fire-and-forget the write operation
-  // This makes the user-facing request faster as it doesn't wait for the KV write.
-  const promise = writeFullData(env, updatedData);
-  if (ctx && typeof ctx.waitUntil === "function") {
-    ctx.waitUntil(promise);
-  } else {
-    void promise.catch((error) => {
-      console.error("Failed to update visitor count:", error);
-    });
-  }
-
+  // DO 不可用时返回当前计数,不再回退到 KV 写入。
+  // 原因:并发请求会同时读到相同的 currentCount 然后各自写入 currentCount+1,
+  // 导致计数不增长。让 DO 单点处理写入是唯一安全的方式。
+  sanitised.visitorCount = currentCount;
   return sanitised;
 }
 
@@ -840,6 +1089,7 @@ async function createDefaultData(env) {
     bookmarks: createDefaultBookmarks(),
     stats: { ...DEFAULT_STATS },
     admin,
+    _version: 0,
   };
 }
 
@@ -962,11 +1212,7 @@ function ensureUrlProtocol(url) {
   return `https://${url}`;
 }
 
-async function hashPassword(password) {
-  const salt = new Uint8Array(16);
-  crypto.getRandomValues(salt);
-  const saltHex = bufferToHex(salt);
-
+async function deriveHashHex(password, saltBuffer, iterations) {
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(password),
@@ -978,40 +1224,40 @@ async function hashPassword(password) {
   const derivedBits = await crypto.subtle.deriveBits(
     {
       name: "PBKDF2",
-      salt: salt,
-      iterations: 100000,
-      hash: "SHA-256",
-    },
-    keyMaterial,
-    512 // 64 bytes
-  );
-
-  const hashHex = bufferToHex(new Uint8Array(derivedBits));
-  return { passwordHash: hashHex, passwordSalt: saltHex };
-}
-
-async function verifyPassword(password, saltHex, expectedHashHex) {
-  const salt = hexToBuffer(saltHex);
-  const keyMaterial = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(password),
-    { name: "PBKDF2" },
-    false,
-    ["deriveBits"]
-  );
-
-  const derivedBits = await crypto.subtle.deriveBits(
-    {
-      name: "PBKDF2",
-      salt: salt,
-      iterations: 100000,
+      salt: saltBuffer,
+      iterations,
       hash: "SHA-256",
     },
     keyMaterial,
     512
   );
 
-  const actualHashHex = bufferToHex(new Uint8Array(derivedBits));
+  return bufferToHex(new Uint8Array(derivedBits));
+}
+
+function resolveIterationsForAlgo(algo) {
+  if (algo === PBKDF2_ALGO_CURRENT) return PBKDF2_ITERATIONS_CURRENT;
+  if (algo === PBKDF2_ALGO_LEGACY) return PBKDF2_ITERATIONS_LEGACY;
+  // 旧数据没有 algo 字段时按遗留 100k 处理
+  return PBKDF2_ITERATIONS_LEGACY;
+}
+
+async function hashPassword(password) {
+  const salt = new Uint8Array(16);
+  crypto.getRandomValues(salt);
+  const saltHex = bufferToHex(salt);
+  const passwordHash = await deriveHashHex(password, salt, PBKDF2_ITERATIONS_CURRENT);
+  return {
+    passwordHash,
+    passwordSalt: saltHex,
+    passwordHashAlgo: PBKDF2_ALGO_CURRENT,
+  };
+}
+
+async function verifyPassword(password, saltHex, expectedHashHex, algo) {
+  const salt = hexToBuffer(saltHex);
+  const iterations = resolveIterationsForAlgo(algo);
+  const actualHashHex = await deriveHashHex(password, salt, iterations);
   return timingSafeEqual(expectedHashHex, actualHashHex);
 }
 
@@ -1357,11 +1603,50 @@ async function resolveSession(request, env) {
     return { token: "", isValid: false };
   }
   const session = await env.SESSIONS.get(token);
-  return { token, isValid: Boolean(session) };
+  return {
+    token,
+    isValid: Boolean(session) && session !== SESSION_REVOKED_MARKER,
+  };
 }
 
 function hasVisitorCounterBinding(env) {
   return Boolean(env?.VISITOR_COUNTER && typeof env.VISITOR_COUNTER.idFromName === "function");
+}
+
+function hasLoginRateLimitBinding(env) {
+  return Boolean(env?.LOGIN_RATE_LIMIT && typeof env.LOGIN_RATE_LIMIT.idFromName === "function");
+}
+
+function getClientIp(request) {
+  const direct = request.headers.get("cf-connecting-ip");
+  if (direct && direct.trim()) return direct.trim();
+  const forwarded = request.headers.get("x-forwarded-for");
+  if (forwarded && forwarded.trim()) return forwarded.split(",")[0].trim();
+  return "unknown";
+}
+
+async function callLoginRateLimit(env, action, ip) {
+  if (!hasLoginRateLimitBinding(env)) {
+    return { locked: false, retryAfterMs: 0 };
+  }
+  try {
+    const id = env.LOGIN_RATE_LIMIT.idFromName(LOGIN_RATE_LIMIT_DO_NAME);
+    const stub = env.LOGIN_RATE_LIMIT.get(id);
+    const url = new URL(`https://login-rate-limit${action}`);
+    url.searchParams.set("ip", ip);
+    const response = await stub.fetch(url.toString());
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload || payload.success !== true) {
+      return { locked: false, retryAfterMs: 0 };
+    }
+    return {
+      locked: Boolean(payload.locked),
+      retryAfterMs: Number.isFinite(payload.retryAfterMs) ? payload.retryAfterMs : 0,
+    };
+  } catch (error) {
+    console.error("Login rate limit DO call failed:", error);
+    return { locked: false, retryAfterMs: 0 };
+  }
 }
 
 function getVisitorCounterStub(env) {
@@ -1537,6 +1822,17 @@ function buildClearSessionCookie() {
     "HttpOnly",
     "SameSite=Strict",
     "Max-Age=0",
+    "Secure",
+  ].join("; ");
+}
+
+function buildVisitorCookie() {
+  return [
+    `${VISITOR_COOKIE_NAME}=1`,
+    `Path=${COOKIE_PATH}`,
+    "HttpOnly",
+    "SameSite=Lax",
+    `Max-Age=${VISITOR_COOKIE_MAX_AGE}`,
     "Secure",
   ].join("; ");
 }

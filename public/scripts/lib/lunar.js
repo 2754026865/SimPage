@@ -102,9 +102,16 @@ function getAnimal(year) {
  * @returns {Object} 农历信息对象
  */
 export function solarToLunar(date) {
+  if (!(date instanceof Date) || Number.isNaN(date.getTime())) {
+    return null;
+  }
   const year = date.getFullYear();
   const month = date.getMonth() + 1;
   const day = date.getDate();
+  // 农历数据表覆盖范围有限(1900-01-31 到 2100 年末),越界直接降级
+  if (year < 1900 || year > 2100) {
+    return null;
+  }
 
   // 基准日期：1900年1月31日，农历1900年正月初一
   let offset = 0;
@@ -197,5 +204,8 @@ export function solarToLunar(date) {
  */
 export function formatLunar(date) {
   const lunar = solarToLunar(date);
+  if (!lunar) {
+    return "";
+  }
   return `农历${lunar.yearCyl}年${lunar.monthName}${lunar.dayName}`;
 }

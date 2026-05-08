@@ -46,8 +46,10 @@ const backToTopButton = document.getElementById("back-to-top");
 const footerElement = document.getElementById("site-footer");
 const footerContentElement = document.getElementById("site-footer-content");
 const footerMetaElement = document.getElementById("site-footer-meta");
+const footerVisitorsElement = document.getElementById("site-footer-visitors");
 const footerInnerElement = footerElement ? footerElement.querySelector(".site-footer-inner") : null;
 const runningDaysElement = document.getElementById("site-running-days");
+const visitorCountElement = document.getElementById("site-visitor-count");
 const faviconLink = document.getElementById("site-favicon");
 const wallpaperContainer = document.getElementById("wallpaper-container");
 
@@ -108,11 +110,14 @@ let customGreeting = "";
 let yiyanMessage = "";
 let footerContentValue = "";
 let hasRunningDaysValue = false;
+let hasVisitorCountValue = false;
 let clockIntervalId = null;
 let viewportEffectsQueued = false;
 let weatherRotationInterval = null;
 let weatherRotationItems = [];
+let weatherRotationRaws = [];
 let weatherRotationIndex = 0;
+let currentWeatherRaw = null;
 let wallpaperTaskToken = 0;
 let localSearchDebounceId = null;
 
@@ -314,20 +319,13 @@ function handleFloatingVisibility() {
 /**
  * 🆕 提取天气温度信息
  */
-function extractWeatherTemp(weatherText) {
-  if (!weatherText) return '🌤️';
-  
-  // 提取温度
-  const tempMatch = weatherText.match(/(-?\d+)°C/);
-  const temp = tempMatch ? `${tempMatch[1]}°C` : '';
-  
-  // 提取天气图标
-  const weatherIcon = weatherText.includes('晴') ? '☀️' : 
-                     weatherText.includes('云') ? '☁️' :
-                     weatherText.includes('雨') ? '🌧️' :
-                     weatherText.includes('雪') ? '❄️' : '🌤️';
-  
-  return temp ? `${weatherIcon} ${temp}` : weatherIcon;
+function extractWeatherTempFromRaw(raw) {
+  if (!raw || typeof raw !== 'object') return '🌤️';
+  const condition = typeof raw.text === 'string' ? raw.text : '';
+  const tempNum = Number(raw.temperature);
+  const tempStr = Number.isFinite(tempNum) ? `${Math.round(tempNum)}°C` : '';
+  const icon = condition ? getWeatherEmoji(condition) : '🌤️';
+  return tempStr ? `${icon} ${tempStr}` : icon;
 }
 
 /**
@@ -361,7 +359,7 @@ function updateFloatingCard() {
   }
   
   if (compactWeather) {
-    setTextIfChanged(compactWeather, extractWeatherTemp(weatherText));
+    setTextIfChanged(compactWeather, extractWeatherTempFromRaw(currentWeatherRaw));
   }
   
   // 更新展开模式
@@ -473,6 +471,7 @@ async function loadData() {
 
     applySiteSettings(data?.settings);
     updateRunningDays(data?.runningDays, data?.siteStartDate); // 🆕 修改这里
+    updateVisitorCount(data?.visitorCount);
     applyRuntimeConfig(data?.config);
 
     originalData.apps = normaliseCollectionItems(data?.apps, "apps");
@@ -648,10 +647,20 @@ function updateRunningDays(runningDays, siteStartDate) {
 }
 
 
+function updateVisitorCount(value) {
+  if (!footerVisitorsElement || !visitorCountElement) return;
+  const parsed = Number(value);
+  const hasValue = Number.isFinite(parsed) && parsed >= 0;
+  setTextIfChanged(visitorCountElement, hasValue ? Math.floor(parsed) : 0);
+  hasVisitorCountValue = hasValue;
+  footerVisitorsElement.hidden = !hasValue;
+  refreshFooterVisibility();
+}
+
 function refreshFooterVisibility() {
   if (!footerElement) return;
   const hasContent = Boolean(footerContentValue);
-  const shouldShowFooter = hasContent || hasRunningDaysValue;
+  const shouldShowFooter = hasContent || hasRunningDaysValue || hasVisitorCountValue;
   footerElement.hidden = !shouldShowFooter;
 }
 
@@ -1167,11 +1176,14 @@ function stopWeatherRotation(clearItems = false) {
   }
   if (clearItems) {
     weatherRotationItems = [];
+    weatherRotationRaws = [];
     weatherRotationIndex = 0;
+    currentWeatherRaw = null;
   }
 }
 
-function applyWeatherText(value) {
+function applyWeatherText(value, raw = null) {
+  currentWeatherRaw = raw;
   setTextIfChanged(weatherElement, value);
   if (shouldUpdateFloatingCard()) {
     updateFloatingCard();
@@ -1201,7 +1213,15 @@ async function updateWeather(weather, retryCount = 0) {
 
     const dataPayload = getPayloadData(payload);
     const data = Array.isArray(dataPayload) ? dataPayload : [];
-    const formatted = data.map(formatWeatherItem).filter(Boolean);
+    const formatted = [];
+    const raws = [];
+    data.forEach((item) => {
+      const text = formatWeatherItem(item);
+      if (text) {
+        formatted.push(text);
+        raws.push(item);
+      }
+    });
 
     if (!formatted.length) {
       throw new Error("天气数据格式异常");
@@ -1210,13 +1230,14 @@ async function updateWeather(weather, retryCount = 0) {
     stopWeatherRotation(true);
 
     if (formatted.length > 1) {
-      startWeatherRotation(formatted);
+      startWeatherRotation(formatted, raws);
       return;
     }
 
     weatherRotationItems = formatted.slice();
+    weatherRotationRaws = raws.slice();
     weatherRotationIndex = 0;
-    applyWeatherText(formatted[0]);
+    applyWeatherText(formatted[0], raws[0]);
   } catch (error) {
     if (requestToken !== weatherRequestToken) {
       return;
@@ -1246,10 +1267,11 @@ async function updateWeather(weather, retryCount = 0) {
 }
 
 
-function startWeatherRotation(weatherInfo) {
+function startWeatherRotation(weatherInfo, rawInfo) {
   stopWeatherRotation(false);
 
   weatherRotationItems = Array.isArray(weatherInfo) ? weatherInfo.slice() : [];
+  weatherRotationRaws = Array.isArray(rawInfo) ? rawInfo.slice() : [];
   if (!weatherRotationItems.length) {
     return;
   }
@@ -1257,14 +1279,20 @@ function startWeatherRotation(weatherInfo) {
   if (weatherRotationIndex >= weatherRotationItems.length) {
     weatherRotationIndex = 0;
   }
-  applyWeatherText(weatherRotationItems[weatherRotationIndex]);
+  applyWeatherText(
+    weatherRotationItems[weatherRotationIndex],
+    weatherRotationRaws[weatherRotationIndex] || null
+  );
 
   if (weatherRotationItems.length > 1 && document.visibilityState !== "hidden") {
     weatherRotationIndex = (weatherRotationIndex + 1) % weatherRotationItems.length;
     weatherRotationInterval = setInterval(() => {
-      applyWeatherText(weatherRotationItems[weatherRotationIndex]);
+      applyWeatherText(
+        weatherRotationItems[weatherRotationIndex],
+        weatherRotationRaws[weatherRotationIndex] || null
+      );
       weatherRotationIndex = (weatherRotationIndex + 1) % weatherRotationItems.length;
-    }, WEATHER_ROTATION_INTERVAL);  // 👈 使用常量
+    }, WEATHER_ROTATION_INTERVAL);
   }
 }
 
@@ -1292,7 +1320,7 @@ async function loadWallpaper(wallpaperUrl) {
     img.fetchPriority = "low";
     
     img.onload = () => {
-      wallpaperContainer.style.backgroundImage = `url('${url}')`;
+      wallpaperContainer.style.backgroundImage = `url(${JSON.stringify(url)})`;
       wallpaperContainer.classList.add("loaded");
     };
     
@@ -1335,11 +1363,11 @@ function handleVisibilityChange() {
   startClockUpdates();
   queueViewportEffects();
   if (weatherRotationItems.length > 1) {
-    startWeatherRotation(weatherRotationItems);
+    startWeatherRotation(weatherRotationItems, weatherRotationRaws);
     return;
   }
   if (weatherRotationItems.length === 1) {
-    applyWeatherText(weatherRotationItems[0]);
+    applyWeatherText(weatherRotationItems[0], weatherRotationRaws[0] || null);
     return;
   }
   if (weatherRequestToken !== 0) {
