@@ -58,15 +58,20 @@
   </button>
   <div class="summary-main">
     <h1 class="sr-only" id="site-name">Page</h1>
-    <!-- 🆕 动态标签 -->
-    <span class="badge" id="dynamic-badge">☀️ 早安</span>
-    <div class="time-display" id="current-time">--:--:--</div>
-    <div class="date-display" id="current-date">--</div>
-    <!-- 🆕 农历和周数显示 -->
-    <div class="lunar-display" id="lunar-date">--</div>
+    <div class="time-row">
+      <div class="time-display" id="current-time">--:--:--</div>
+      <span class="badge" id="dynamic-badge">☀️ 早安</span>
+    </div>
+    <div class="meta-line">
+      <span class="date-display" id="current-date">--</span>
+      <span class="meta-dot" aria-hidden="true">·</span>
+      <span class="lunar-display" id="lunar-date">--</span>
+    </div>
     <div class="greeting" id="greeting-text">欢迎回来</div>
-    <!-- 🆕 今日进度条 -->
-    <div class="progress-display" id="today-progress">💡 今日已过 0% ░░░░░░░░░░</div>
+    <div class="progress-display" id="today-progress" data-progress="0">
+      <span class="progress-track" aria-hidden="true"><span class="progress-fill"></span></span>
+      <span class="progress-text">今日已过 0%</span>
+    </div>
   </div>
   <div class="summary-meta">
     <div class="weather-block">

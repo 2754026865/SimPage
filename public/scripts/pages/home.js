@@ -243,17 +243,33 @@ function getTodayProgress() {
 }
 
 /**
- * 🆕 渲染进度条
+ * 🆕 渲染进度条（紧凑：返回 ASCII 字符串供浮动卡使用）
  */
 function renderProgressBar(progress) {
   const totalBlocks = 10;
   const filledBlocks = Math.round((progress / 100) * totalBlocks);
   const emptyBlocks = totalBlocks - filledBlocks;
-  
+
   const filled = '▓'.repeat(filledBlocks);
   const empty = '░'.repeat(emptyBlocks);
-  
+
   return `💡 今日已过 ${progress}% ${filled}${empty}`;
+}
+
+/**
+ * 🆕 更新主页紧凑进度条（width + 文本）
+ */
+function updateProgressDisplay(element, progress) {
+  if (!element) return;
+  const next = String(progress);
+  if (element.dataset.progress !== next) {
+    element.dataset.progress = next;
+    element.style.setProperty('--progress', `${progress}%`);
+    const fill = element.querySelector('.progress-fill');
+    if (fill) fill.style.width = `${progress}%`;
+    const text = element.querySelector('.progress-text');
+    if (text) text.textContent = `今日已过 ${progress}%`;
+  }
 }
 
 function setTextIfChanged(element, value) {
@@ -418,7 +434,7 @@ function updateClock() {
   // 🆕 更新今日进度
   if (todayProgressElement) {
     const progress = getTodayProgress();
-    setTextIfChanged(todayProgressElement, renderProgressBar(progress));
+    updateProgressDisplay(todayProgressElement, progress);
   }
   
   // 更新问候语
