@@ -52,7 +52,7 @@ const PBKDF2_ITERATIONS_LEGACY = 100000;
 const PBKDF2_ITERATIONS_CURRENT = 600000;
 const PBKDF2_ALGO_LEGACY = "pbkdf2-sha256-100k";
 const PBKDF2_ALGO_CURRENT = "pbkdf2-sha256-600k";
-const ICON_LINK_API_URL = "https://ancient-art-7e23.2754026865.workers.dev/api/icon";
+const ICON_LINK_API_URL = "https://iconcc.439933.xyz/api/icon";
 // IconLink requires this Origin header for server-to-server API requests.
 const ICON_LINK_API_REQUEST_ORIGIN = "https://nav.439933.xyz";
 const ICON_LINK_API_TIMEOUT_MS = 30000;
