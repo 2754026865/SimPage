@@ -52,6 +52,10 @@ const PBKDF2_ITERATIONS_LEGACY = 100000;
 const PBKDF2_ITERATIONS_CURRENT = 600000;
 const PBKDF2_ALGO_LEGACY = "pbkdf2-sha256-100k";
 const PBKDF2_ALGO_CURRENT = "pbkdf2-sha256-600k";
+const ICON_LINK_API_URL = "https://ancient-art-7e23.2754026865.workers.dev/api/icon";
+// IconLink requires this Origin header for server-to-server API requests.
+const ICON_LINK_API_REQUEST_ORIGIN = "https://nav.439933.xyz";
+const ICON_LINK_API_TIMEOUT_MS = 30000;
 
 // =================================================================================
 // API Routes
@@ -755,7 +759,7 @@ function parseDateAsLocalDay(value) {
 }
 
 
-function handleFetchLogo(request, env) {
+async function handleFetchLogo(request, env) {
   try {
     const { searchParams } = new URL(request.url);
     const targetUrl = searchParams.get("targetUrl");
@@ -764,33 +768,64 @@ function handleFetchLogo(request, env) {
       return jsonFailure("缺少有效的 targetUrl 参数", 400);
     }
 
-    // 优先用 URL 解析,拿不到再回退到正则提取
-    let domain = "";
     const trimmed = targetUrl.trim();
+    if (trimmed.length > 2048) {
+      return jsonFailure("目标网址长度不能超过 2048 个字符。", 400);
+    }
+
+    let siteUrl;
     try {
       const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-      const parsed = new URL(candidate);
-      domain = parsed.hostname;
+      siteUrl = new URL(candidate);
     } catch (_error) {
-      domain = trimmed.replace(/^(https?:\/\/)?/i, "").split("/")[0];
+      return jsonFailure("无效的网址。", 400);
     }
 
-    domain = (domain || "").trim().toLowerCase();
-    // 严格校验:仅允许字母数字、点、连字符;长度合理
-    if (!domain || domain.length > 253 || !/^[a-z0-9.-]+$/.test(domain)) {
-      return jsonFailure("无效的域名。", 400);
-    }
-    // 必须含至少一个点(过滤纯主机名/localhost)
-    if (!domain.includes(".") || domain.startsWith(".") || domain.endsWith(".")) {
-      return jsonFailure("无效的域名。", 400);
+    if (siteUrl.protocol !== "http:" && siteUrl.protocol !== "https:") {
+      return jsonFailure("网址仅支持 HTTP 或 HTTPS 协议。", 400);
     }
 
-    const logoUrl = `https://icon.ooo/${encodeURIComponent(domain)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), ICON_LINK_API_TIMEOUT_MS);
+    let response;
+    try {
+      response = await fetch(ICON_LINK_API_URL, {
+        method: "POST",
+        headers: {
+          "Accept": "application/json",
+          "Content-Type": "application/json",
+          "Origin": ICON_LINK_API_REQUEST_ORIGIN,
+        },
+        body: JSON.stringify({ url: siteUrl.toString() }),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      const message =
+        typeof payload?.error === "string" && payload.error.trim()
+          ? payload.error.trim()
+          : `图标 API 请求失败（HTTP ${response.status}）`;
+      const status = response.status >= 400 && response.status < 500 ? response.status : 502;
+      return jsonFailure(message, status);
+    }
+
+    const logoUrl = typeof payload.short_url === "string" ? payload.short_url.trim() : "";
+    if (!/^https?:\/\//i.test(logoUrl)) {
+      return jsonFailure("图标 API 未返回有效的短链。", 502);
+    }
+
     return jsonSuccess({ logoUrl });
 
   } catch (error) {
-    console.error("生成 Logo 链接时发生内部错误:", error);
-    return jsonFailure("生成 Logo 链接失败", 500);
+    if (error?.name === "AbortError") {
+      return jsonFailure("获取网站图标超时，请稍后重试。", 504);
+    }
+    console.error("调用图标 API 失败:", error);
+    return jsonFailure("无法访问图标 API，请稍后重试。", 502);
   }
 }
 async function handleLogout(request, env) {
