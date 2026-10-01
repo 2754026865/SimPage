@@ -106,7 +106,7 @@ const defaultSettings = {
   weather: createDefaultWeatherSettings(),
   glassOpacity: 40, // 🆕 添加默认透明度
   useWallpaper: true, // 🆕 添加默认值
-  wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
+  wallpaperUrl: "/api/wallpaper",
 };
 
 const state = {

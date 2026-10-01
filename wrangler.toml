@@ -3,6 +3,10 @@ name = "simpage"
 main = "worker.js"
 compatibility_date = "2024-03-26"
 
+# Optional wallpaper API secret: UAPI_KEY
+# Add it in Cloudflare Dashboard > Settings > Variables and Secrets (type: Secret).
+# The Worker reads env.UAPI_KEY; do not place the actual key in this file.
+
 # KV Namespace bindings
 # 1. SIMPAGE_DATA: Stores the main application data (settings, apps, bookmarks).
 # 2. SESSIONS: Stores user login session tokens.

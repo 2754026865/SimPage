@@ -83,6 +83,9 @@ npm run deploy
 ## 运行时配置
 
 - `ADMIN_PASSWORD`：后台初始密码，必须通过 `wrangler secret put` 配置。
+- `UAPI_KEY`：可选的 UAPI 壁纸接口 Key。在 **SimPage Worker → 设置 → 变量和机密** 中添加同名变量，类型选择 **机密（Secret）**，填入原始 Key（不带 `Bearer ` 前缀）。未配置时使用接口的匿名额度。
+
+默认壁纸通过本站 `/api/wallpaper` 调用 [UAPI 必应每日壁纸](https://uapis.cn/docs/api-reference/get-image-bing-daily)，获取 4K 图片。Key 仅由 Worker 通过请求头发送，不出现在浏览器、图片链接或站点配置中。图片响应允许缓存 30 分钟，不使用 KV 保存壁纸；旧默认壁纸地址会自动改走这个接口，自定义图片地址保持不变。
 
 > 安全说明：`wrangler.toml` 中的 KV `id` 与 Durable Object 绑定信息**不是机密**，可以随仓库公开提交。真正的机密是你的 Cloudflare 账户 API Token / `ADMIN_PASSWORD`：前者请通过 CI 的 secrets 注入，后者通过 `wrangler secret put` 写入，**永远不要写入仓库**。
 

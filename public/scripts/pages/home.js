@@ -88,7 +88,7 @@ const DEFAULT_SITE_SETTINGS = {
   weather: { ...defaultWeather },
   glassOpacity: 40, // 🆕 添加默认透明度
   useWallpaper: true, // 🆕 添加
-  wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加
+  wallpaperUrl: "/api/wallpaper",
 };
 
 const defaultFaviconHref = faviconLink?.getAttribute("href") || "data:,";
@@ -591,7 +591,7 @@ function removeWallpaper() {
 
   wallpaperContainer.classList.remove("loaded");
   wallpaperContainer.style.backgroundImage = "";
-  wallpaperContainer.style.opacity = "0";
+  wallpaperContainer.style.removeProperty("opacity");
 }
 
 function scheduleWallpaperUpdate(isEnabled, wallpaperUrl) {
@@ -601,7 +601,7 @@ function scheduleWallpaperUpdate(isEnabled, wallpaperUrl) {
       return;
     }
     if (isEnabled) {
-      void loadWallpaper(wallpaperUrl);
+      loadWallpaper(wallpaperUrl, taskToken);
       return;
     }
     removeWallpaper();
@@ -1323,32 +1323,46 @@ function handleBackToTopVisibility() {
  * 加载壁纸
  * @param {string} wallpaperUrl - 壁纸图片 URL
  */
-async function loadWallpaper(wallpaperUrl) {
-  if (!wallpaperContainer) {
+function loadWallpaper(wallpaperUrl, taskToken = wallpaperTaskToken) {
+  if (!wallpaperContainer || taskToken !== wallpaperTaskToken) {
     return;
   }
-  
-  const url = (wallpaperUrl && wallpaperUrl.trim()) || "https://bing.img.run/uhd.php";
-  
-  try {
-    const img = new Image();
-    img.decoding = "async";
-    img.fetchPriority = "low";
-    
-    img.onload = () => {
+
+  const defaultUrl = "/api/wallpaper";
+  const requestedUrl = typeof wallpaperUrl === "string" ? wallpaperUrl.trim() : "";
+  const url = !requestedUrl || requestedUrl === "https://bing.img.run/uhd.php"
+    ? defaultUrl
+    : requestedUrl;
+  const img = new Image();
+  img.decoding = "async";
+  img.fetchPriority = "low";
+  let settled = false;
+  let timeoutId;
+  const finish = (loaded) => {
+    if (settled) return;
+    settled = true;
+    window.clearTimeout(timeoutId);
+    img.onload = null;
+    img.onerror = null;
+    if (!loaded) img.removeAttribute("src");
+    if (taskToken !== wallpaperTaskToken) return;
+    if (loaded) {
       wallpaperContainer.style.backgroundImage = `url(${JSON.stringify(url)})`;
+      wallpaperContainer.style.removeProperty("opacity");
       wallpaperContainer.classList.add("loaded");
-    };
-    
-    img.onerror = () => {
-      if (url !== "https://bing.img.run/uhd.php") {
-        void loadWallpaper("https://bing.img.run/uhd.php");
-      }
-    };
-    
+    } else if (url !== defaultUrl) {
+      loadWallpaper(defaultUrl, taskToken);
+    } else {
+      console.warn("默认壁纸加载失败，请稍后刷新重试。");
+    }
+  };
+  img.onload = () => finish(true);
+  img.onerror = () => finish(false);
+  timeoutId = window.setTimeout(() => finish(false), 15000);
+  try {
     img.src = url;
-    
   } catch (error) {
+    finish(false);
     console.error("壁纸加载出错:", error);
   }
 }

@@ -17,7 +17,7 @@ const BASE_DEFAULT_SETTINGS = Object.freeze({
   footer: "",
   glassOpacity: 40, // 🆕 添加默认透明度
   useWallpaper: true, // 🆕 添加
-  wallpaperUrl: "https://bing.img.run/uhd.php", // 🆕 添加默认壁纸 URL
+  wallpaperUrl: "/api/wallpaper",
 });
 
 const DEFAULT_STATS = Object.freeze({
@@ -64,6 +64,7 @@ const ICON_LINK_API_TIMEOUT_MS = 30000;
 router.post("/api/login", handleLogin);
 router.get("/api/data", handleGetData);
 router.get("/api/weather", handleGetWeather);
+router.get("/api/wallpaper", handleGetWallpaper);
 router.get("/api/admin/data", requireAuth, handleGetAdminData);
 router.put("/api/admin/data", requireAuth, handleDataUpdate);
 router.patch("/api/admin/apps", requireAuth, handlePatchApps);
@@ -758,6 +759,52 @@ function parseDateAsLocalDay(value) {
   return new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate());
 }
 
+
+// UAPI_KEY is an optional Cloudflare secret. Only the Worker sends it upstream.
+async function handleGetWallpaper(request, env) {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  try {
+    const apiKey = typeof env?.UAPI_KEY === "string" ? env.UAPI_KEY.trim() : "";
+    const response = await fetch("https://uapis.cn/api/v1/image/bing-daily?resolution=4k", {
+      headers: {
+        Accept: "image/webp,image/*;q=0.9",
+        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+      },
+      redirect: "manual",
+      signal: controller.signal,
+    });
+    if (!response.ok) {
+      await response.body?.cancel();
+      throw new Error(`UAPI wallpaper returned HTTP ${response.status}`);
+    }
+    const contentType = (response.headers.get("Content-Type") || "").split(";", 1)[0].trim().toLowerCase();
+    if (!["image/webp", "image/jpeg", "image/png", "image/avif"].includes(contentType)) {
+      await response.body?.cancel();
+      throw new Error("UAPI wallpaper did not return an image");
+    }
+    const image = await response.arrayBuffer();
+    if (!image.byteLength) throw new Error("UAPI wallpaper returned an empty image");
+    return new Response(image, {
+      status: 200,
+      headers: {
+        "Content-Type": contentType,
+        "Content-Length": String(image.byteLength),
+        "Cache-Control": "public, max-age=1800",
+        "Referrer-Policy": "no-referrer",
+      },
+    });
+  } catch (error) {
+    // Do not log upstream bodies or request headers, which may contain the key.
+    console.error("获取 UAPI 每日壁纸失败:", error?.name === "AbortError" ? "timeout" : "upstream error");
+    return new Response(JSON.stringify({ ok: false, error: "每日壁纸暂时不可用" }), {
+      status: error?.name === "AbortError" ? 504 : 502,
+      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
+    });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
 
 async function handleFetchLogo(request, env) {
   try {
@@ -1803,7 +1850,9 @@ function normaliseVisualSettings(source) {
   if (typeof source?.wallpaperUrl === "string") {
     const trimmed = source.wallpaperUrl.trim();
     if (trimmed) {
-      normalised.wallpaperUrl = trimmed;
+      normalised.wallpaperUrl = trimmed === "https://bing.img.run/uhd.php"
+        ? BASE_DEFAULT_SETTINGS.wallpaperUrl
+        : trimmed;
     }
   }
   return normalised;
