@@ -1,9 +1,12 @@
 import { renderMarkdown } from "../lib/markdown.js";
 import { formatLunar } from "../lib/lunar.js"; // 🆕 导入农历工具
 import "../features/theme.js";
+import { DEFAULT_SETTINGS, normaliseSiteSettings } from "../lib/shared.js";
+import { createDailyCalendarCache } from "../lib/date.js";
+import { loadImage } from "../lib/image.js";
 import {
   createFaviconController,
-  deriveFallbackIcon,
+  createItemIcon,
   normaliseFooterValue,
   replaceChildrenSafe,
   scrollToTop as sharedScrollToTop,
@@ -47,7 +50,6 @@ const footerElement = document.getElementById("site-footer");
 const footerContentElement = document.getElementById("site-footer-content");
 const footerMetaElement = document.getElementById("site-footer-meta");
 const footerVisitorsElement = document.getElementById("site-footer-visitors");
-const footerInnerElement = footerElement ? footerElement.querySelector(".site-footer-inner") : null;
 const runningDaysElement = document.getElementById("site-running-days");
 const visitorCountElement = document.getElementById("site-visitor-count");
 const faviconLink = document.getElementById("site-favicon");
@@ -81,14 +83,9 @@ const defaultWeather = {
   city: "北京",
 };
 const DEFAULT_SITE_SETTINGS = {
+  ...DEFAULT_SETTINGS,
   siteName: defaultSiteName,
-  siteLogo: "",
-  greeting: "",
-  footer: "",
   weather: { ...defaultWeather },
-  glassOpacity: 40, // 🆕 添加默认透明度
-  useWallpaper: true, // 🆕 添加
-  wallpaperUrl: "/api/wallpaper",
 };
 
 const defaultFaviconHref = faviconLink?.getAttribute("href") || "data:,";
@@ -136,6 +133,11 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 
+const getDailyCalendar = createDailyCalendarCache({
+  formatDate: (date) => dateFormatter.format(date),
+  formatLunar,
+});
+
 const runtimeConfig = {
   weather: {
     defaultCity: defaultWeather.city,
@@ -143,8 +145,9 @@ const runtimeConfig = {
 };
 
 let activeWeather = { city: runtimeConfig.weather.defaultCity };
-let weatherSource = "default";
 let weatherRequestToken = 0;
+let weatherAbortController = null;
+let weatherRetryTimer = null;
 
 const appsEmptyDefault = appsEmpty ? appsEmpty.textContent : "";
 const bookmarksEmptyDefault = bookmarksEmpty ? bookmarksEmpty.textContent : "";
@@ -226,12 +229,6 @@ function getDynamicBadge(hour) {
 /**
  * 🆕 计算本年第几周
  */
-function getWeekNumber(date) {
-  const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
-  const pastDaysOfYear = (date - firstDayOfYear) / 86400000;
-  return Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
-}
-
 /**
  * 🆕 计算今日进度
  */
@@ -265,7 +262,6 @@ function updateProgressDisplay(element, progress) {
   const next = String(progress);
   if (element.dataset.progress !== next) {
     element.dataset.progress = next;
-    element.style.setProperty('--progress', `${progress}%`);
     const fill = element.querySelector('.progress-fill');
     if (fill) fill.style.width = `${progress}%`;
     const text = element.querySelector('.progress-text');
@@ -326,8 +322,9 @@ function handleFloatingVisibility() {
   
   const scrollY = window.scrollY;
   if (scrollY > FLOATING_THRESHOLD) {
-    floatingCard.classList.add('is-visible');
-    updateFloatingCard();
+    const wasVisible = floatingCard.classList.contains("is-visible");
+    floatingCard.classList.add("is-visible");
+    if (!wasVisible) updateFloatingCard();
   } else {
     floatingCard.classList.remove('is-visible');
   }
@@ -348,19 +345,15 @@ function extractWeatherTempFromRaw(raw) {
 /**
  * 🆕 更新浮动卡片内容
  */
-function updateFloatingCard() {
-  if (!floatingCard) return;
-  
-  const now = new Date();
+function updateFloatingCard(now = new Date()) {
+  if (!shouldUpdateFloatingCard()) return;
   const hour = now.getHours();
   
   // 获取动态数据
   const badge = getDynamicBadge(hour);
   const time = timeFormatter.format(now);
   const timeShort = time.substring(0, 5); // 只取 HH:MM
-  const date = dateFormatter.format(now);
-  const lunar = formatLunar(now);
-  const weekNum = getWeekNumber(now);
+  const { date, lunar, weekNum } = getDailyCalendar(now);
   const progress = getTodayProgress();
   const progressBar = renderProgressBar(progress);
   const weatherText = weatherElement ? weatherElement.textContent : '';
@@ -409,6 +402,7 @@ function updateFloatingCard() {
 function updateClock() {
   const now = new Date();
   const hour = now.getHours();
+  const calendar = getDailyCalendar(now);
   
   // 更新时间
   if (timeElement) {
@@ -417,7 +411,7 @@ function updateClock() {
   
   // 更新日期
   if (dateElement) {
-    setTextIfChanged(dateElement, dateFormatter.format(now));
+    setTextIfChanged(dateElement, calendar.date);
   }
   
   // 🆕 更新动态标签
@@ -427,9 +421,7 @@ function updateClock() {
   
   // 🆕 更新农历和周数
   if (lunarDateElement) {
-    const lunar = formatLunar(now);
-    const weekNum = getWeekNumber(now);
-    setTextIfChanged(lunarDateElement, `${lunar} · 第${weekNum}周`);
+    setTextIfChanged(lunarDateElement, `${calendar.lunar} · 第${calendar.weekNum}周`);
   }
   
   // 🆕 更新今日进度
@@ -486,10 +478,10 @@ async function loadData() {
     }
     const data = getPayloadData(payload);
 
+    applyRuntimeConfig(data?.config);
     applySiteSettings(data?.settings);
     updateRunningDays(data?.runningDays, data?.siteStartDate); // 🆕 修改这里
     updateVisitorCount(data?.visitorCount);
-    applyRuntimeConfig(data?.config);
 
     originalData.apps = normaliseCollectionItems(data?.apps, "apps");
     originalData.bookmarks = normaliseCollectionItems(data?.bookmarks, "bookmarks");
@@ -505,54 +497,7 @@ async function loadData() {
 }
 
 function prepareSiteSettings(settings) {
-  const prepared = {
-    ...DEFAULT_SITE_SETTINGS,
-    weather: { ...DEFAULT_SITE_SETTINGS.weather },
-  };
-  if (!settings || typeof settings !== "object") {
-    return prepared;
-  }
-  if (typeof settings.siteName === "string" && settings.siteName.trim()) {
-    prepared.siteName = settings.siteName.trim();
-  }
-  if (typeof settings.siteLogo === "string") {
-    prepared.siteLogo = settings.siteLogo.trim();
-  }
-  if (typeof settings.greeting === "string") {
-    prepared.greeting = settings.greeting.trim();
-  }
-  if (typeof settings.footer === "string") {
-    prepared.footer = normaliseFooterValue(settings.footer);
-  }
-  // 🆕 添加透明度处理
-  if (typeof settings.glassOpacity === "number") {
-    const opacity = Math.max(0, Math.min(100, Math.round(settings.glassOpacity)));
-    prepared.glassOpacity = opacity;
-  }
-  // 🆕 添加 useWallpaper 处理
-  if (typeof settings.useWallpaper === "boolean") {
-    prepared.useWallpaper = settings.useWallpaper;
-  }
-  // 🆕 添加壁纸 URL 处理
-  if (typeof settings.wallpaperUrl === "string") {
-    const trimmed = settings.wallpaperUrl.trim();
-    if (trimmed) {
-      prepared.wallpaperUrl = trimmed;
-    }
-  }
-
-
-  const weather = normaliseWeatherSetting(settings.weather);
-  if (weather) {
-    prepared.weather = weather;
-  } else if (settings.weatherLocation) {
-    const legacyWeather = normaliseWeatherSetting(settings.weatherLocation);
-    if (legacyWeather) {
-      prepared.weather = legacyWeather;
-    }
-  }
-
-  return prepared;
+  return normaliseSiteSettings(settings, { defaults: DEFAULT_SITE_SETTINGS });
 }
 
 /**
@@ -577,7 +522,7 @@ function applySiteSettings(settings) {
   updateFavicon(prepared.siteLogo, prepared.siteName);
   updateGreetingDisplay();
   updateFooter(prepared.footer);
-  setActiveWeather(prepared.weather, { source: "settings" });
+  setActiveWeather(prepared.weather);
   applyGlassOpacity(prepared.glassOpacity); // 🆕 应用透明度
   scheduleWallpaperUpdate(prepared.useWallpaper, prepared.wallpaperUrl);
 }
@@ -634,15 +579,6 @@ function updateFooter(rawContent) {
   refreshFooterVisibility();
 }
 
-function syncRunningDaysInline() {
-  if (!footerMetaElement) return;
-
-  footerMetaElement.classList.remove("is-fixed");
-  if (footerInnerElement && footerMetaElement.parentElement !== footerInnerElement) {
-    footerInnerElement.appendChild(footerMetaElement);
-  }
-}
-
 function updateRunningDays(runningDays, siteStartDate) {
   if (!footerMetaElement || !runningDaysElement) return;
 
@@ -667,7 +603,6 @@ function updateRunningDays(runningDays, siteStartDate) {
   setTextIfChanged(runningDaysElement, hasValue ? days : 0);
 
   hasRunningDaysValue = hasValue;
-  syncRunningDaysInline();
   footerMetaElement.hidden = !hasValue;
 
   refreshFooterVisibility();
@@ -696,6 +631,7 @@ function showCollection(view, { focusTab = false } = {}) {
     return;
   }
   activeCollection = view;
+  renderCollectionIfNeeded(view);
 
   collectionToggleButtons.forEach((button) => {
     const target = button.dataset.view;
@@ -720,11 +656,35 @@ function showCollection(view, { focusTab = false } = {}) {
   });
 }
 
+const collectionViews = {
+  apps: { items: [], options: {}, renderedItems: null, renderedMessage: null },
+  bookmarks: { items: [], options: {}, renderedItems: null, renderedMessage: null },
+};
+
+function renderCollectionIfNeeded(view) {
+  const state = collectionViews[view];
+  if (state.renderedItems === state.items && state.renderedMessage === state.options.emptyMessage) return;
+  if (view === "apps") {
+    renderTileGrid(appsGrid, appsEmpty, state.items, { ...state.options, defaultMessage: appsEmptyDefault });
+  } else {
+    renderBookmarksNow(state.items, state.options);
+  }
+  state.renderedItems = state.items;
+  state.renderedMessage = state.options.emptyMessage;
+}
+
+function setCollectionContent(view, items, options) {
+  collectionViews[view].items = items;
+  collectionViews[view].options = options;
+  if (activeCollection === view) renderCollectionIfNeeded(view);
+}
+
 function renderApps(items, options = {}) {
-  renderTileGrid(appsGrid, appsEmpty, items, {
-    emptyMessage: options.emptyMessage,
-    defaultMessage: appsEmptyDefault,
-  });
+  setCollectionContent("apps", items, options);
+}
+
+function renderBookmarks(items, options = {}) {
+  setCollectionContent("bookmarks", items, options);
 }
 
 function renderTileGrid(container, emptyHint, items, { emptyMessage, defaultMessage } = {}) {
@@ -749,7 +709,7 @@ function renderTileGrid(container, emptyHint, items, { emptyMessage, defaultMess
   replaceChildrenSafe(container, fragment);
 }
 
-function renderBookmarks(items, options = {}) {
+function renderBookmarksNow(items, options = {}) {
   if (!bookmarksGrid || !bookmarksEmpty) return;
 
   if (!Array.isArray(items) || !items.length) {
@@ -830,24 +790,7 @@ function createTile(item) {
   link.rel = "noopener noreferrer";
   link.setAttribute("role", "listitem");
 
-  const iconWrapper = document.createElement("span");
-  iconWrapper.className = "tile-icon";
-  const iconContent = String(item.icon || "").trim();
-
-  if (iconContent.startsWith("http://") || iconContent.startsWith("https://") || iconContent.startsWith("data:")) {
-    const img = document.createElement("img");
-    img.alt = `${item.name || ""} 图标`;
-    img.onerror = () => {
-      img.onerror = null;
-      iconWrapper.textContent = deriveFallbackIcon(item.name);
-    };
-    iconWrapper.appendChild(img);
-    img.src = iconContent;
-  } else if (iconContent.length > 0) {
-    iconWrapper.textContent = iconContent.slice(0, 4);
-  } else {
-    iconWrapper.textContent = deriveFallbackIcon(item.name);
-  }
+  const iconWrapper = createItemIcon({ name: item.name, icon: item.icon, className: "tile-icon" });
 
   const title = document.createElement("h3");
   title.className = "tile-title";
@@ -877,12 +820,9 @@ function performLocalSearch(target, query) {
   }
   const trimmed = query.trim();
   if (!trimmed) {
-    showCollection(target);
-    clearLocalSearchResults();
+    clearLocalSearchResults(target);
     return;
   }
-
-  showCollection(target);
 
   const dataset = target === "apps" ? originalData.apps : originalData.bookmarks;
   const keywords = trimmed.toLowerCase();
@@ -899,20 +839,23 @@ function performLocalSearch(target, query) {
 
   if (target === "apps") {
     renderApps(matches, { emptyMessage: `未找到与「${trimmed}」匹配的应用。` });
-    renderBookmarks(originalData.bookmarks);
   } else {
-    renderApps(originalData.apps);
     renderBookmarks(matches, { emptyMessage: `未找到与「${trimmed}」匹配的书签。` });
   }
-
+  const other = target === "apps" ? "bookmarks" : "apps";
+  collectionViews[other].items = originalData[other];
+  collectionViews[other].options = {};
+  showCollection(target);
   updateLocalSearchFeedback(matches.length, target, trimmed);
 }
 
-function clearLocalSearchResults() {
-  renderApps(originalData.apps);
-  renderBookmarks(originalData.bookmarks);
+function clearLocalSearchResults(view = activeCollection) {
+  for (const key of ["apps", "bookmarks"]) {
+    collectionViews[key].items = originalData[key];
+    collectionViews[key].options = {};
+  }
   hideLocalSearchFeedback();
-  showCollection(activeCollection);
+  showCollection(view);
 }
 
 function updateLocalSearchFeedback(count, target, query) {
@@ -1094,19 +1037,9 @@ function getDefaultWeather() {
 }
 
 function applyRuntimeConfig(config) {
-  if (!config || typeof config !== "object") {
-    return;
-  }
-  const city =
-    typeof config.weather?.defaultCity === "string" ? config.weather.defaultCity.trim() : "";
-  if (city) {
-    runtimeConfig.weather.defaultCity = city;
-    if (weatherSource !== "settings") {
-      setActiveWeather({ city }, { source: "default" });
-    }
-  }
+  const city = typeof config?.weather?.defaultCity === "string" ? config.weather.defaultCity.trim() : "";
+  if (city) runtimeConfig.weather.defaultCity = city;
 }
-
 
 function updateActiveWeather(weather) {
   if (!weather) {
@@ -1124,28 +1057,9 @@ function updateActiveWeather(weather) {
 }
 
 
-function setActiveWeather(rawWeather, { source = "settings" } = {}) {
-  let weather = normaliseWeatherSetting(rawWeather);
-  if (!weather || (Array.isArray(weather) && weather.length === 0)) {
-    if (source === "settings") {
-      weatherSource = "default";
-      updateActiveWeather(getDefaultWeather());
-    }
-    return;
-  }
-  if (source === "settings") {
-    weatherSource = "settings";
-    // 🔧 直接传递数组，不要转换为单个对象
-    updateActiveWeather(weather);
-    return;
-  }
-  if (weatherSource !== "settings") {
-    weatherSource = "default";
-    // 🔧 直接传递数组，不要转换为单个对象
-    updateActiveWeather(weather);
-  }
+function setActiveWeather(rawWeather) {
+  updateActiveWeather(normaliseWeatherSetting(rawWeather));
 }
-
 
 function refreshWeatherDisplay() {
   if (!weatherElement) return;
@@ -1246,11 +1160,15 @@ function applyWeatherText(value, raw = null) {
 async function updateWeather(weather, retryCount = 0) {
   if (!weatherElement) return;
   const requestToken = ++weatherRequestToken;
+  weatherAbortController?.abort();
+  if (weatherRetryTimer) clearTimeout(weatherRetryTimer);
+  const controller = new AbortController();
+  weatherAbortController = controller;
   const maxRetries = 2;
   const retryDelay = 1000;
 
   try {
-    const { response, payload } = await fetchJson("/api/weather", { cache: "no-cache" });
+    const { response, payload } = await fetchJson("/api/weather", { cache: "no-cache", signal: controller.signal, timeoutMs: 20000 });
     if (!payload || typeof payload !== "object") {
       throw new Error("天气服务响应异常");
     }
@@ -1303,7 +1221,8 @@ async function updateWeather(weather, retryCount = 0) {
     applyWeatherText("天气信息获取失败");
 
     if (retryCount < maxRetries) {
-      setTimeout(() => {
+      weatherRetryTimer = setTimeout(() => {
+        weatherRetryTimer = null;
         if (requestToken === weatherRequestToken) {
           updateWeather(weather, retryCount + 1);
         }
@@ -1361,64 +1280,39 @@ function handleBackToTopVisibility() {
  * @param {string} wallpaperUrl - 壁纸图片 URL
  */
 function loadWallpaper(wallpaperUrl, taskToken = wallpaperTaskToken, defaultAttempt = 0) {
-  if (!wallpaperContainer || taskToken !== wallpaperTaskToken) {
-    return;
-  }
-
+  if (!wallpaperContainer || taskToken !== wallpaperTaskToken) return;
   const defaultUrl = "/api/wallpaper";
   const requestedUrl = typeof wallpaperUrl === "string" ? wallpaperUrl.trim() : "";
-  const url = !requestedUrl || requestedUrl === "https://bing.img.run/uhd.php"
-    ? defaultUrl
-    : requestedUrl;
-  const img = new Image();
-  img.decoding = "async";
-  let settled = false;
-  let timeoutId;
-  const cleanup = () => {
-    window.clearTimeout(timeoutId);
-    img.onload = null;
-    img.onerror = null;
-    if (cancelWallpaperLoad === cancel) cancelWallpaperLoad = null;
-  };
-  const cancel = () => {
-    settled = true;
-    cleanup();
-    img.removeAttribute("src");
-  };
-  cancelWallpaperLoad = cancel;
-  const finish = (loaded, reason = "图片请求失败") => {
-    if (settled) return;
-    settled = true;
-    cleanup();
-    if (!loaded) img.removeAttribute("src");
-    if (taskToken !== wallpaperTaskToken) return;
-    if (loaded) {
+  const url = !requestedUrl || requestedUrl === "https://bing.img.run/uhd.php" ? defaultUrl : requestedUrl;
+  const task = loadImage(url, {
+    timeoutMs: 20000,
+    onLoad() {
+      if (taskToken !== wallpaperTaskToken) return;
+      cancelWallpaperLoad = null;
       wallpaperContainer.style.backgroundImage = `url(${JSON.stringify(url)})`;
       wallpaperContainer.style.removeProperty("opacity");
       wallpaperContainer.classList.add("loaded");
-    } else if (url !== defaultUrl) {
-      console.warn(`自定义壁纸${reason}，尝试默认壁纸。`);
-      loadWallpaper(defaultUrl, taskToken);
-    } else if (defaultAttempt === 0) {
-      console.warn(`默认壁纸${reason}，稍后重试一次。`);
-      const retryId = window.setTimeout(() => {
-        if (taskToken !== wallpaperTaskToken) return;
-        cancelWallpaperLoad = null;
-        loadWallpaper(defaultUrl, taskToken, 1);
-      }, 1000);
-      cancelWallpaperLoad = () => window.clearTimeout(retryId);
-    } else {
-      console.warn(`默认壁纸${reason}，继续使用当前背景。`);
-    }
-  };
-  img.onload = () => finish(true);
-  img.onerror = () => finish(false);
-  timeoutId = window.setTimeout(() => finish(false, "加载超时"), 20000);
-  try {
-    img.src = url;
-  } catch (error) {
-    finish(false);
-  }
+    },
+    onError(reason) {
+      if (taskToken !== wallpaperTaskToken) return;
+      cancelWallpaperLoad = null;
+      if (url !== defaultUrl) {
+        console.warn(`自定义壁纸${reason}，尝试默认壁纸。`);
+        loadWallpaper(defaultUrl, taskToken);
+      } else if (defaultAttempt === 0) {
+        console.warn(`默认壁纸${reason}，稍后重试一次。`);
+        const retryId = window.setTimeout(() => {
+          if (taskToken !== wallpaperTaskToken) return;
+          cancelWallpaperLoad = null;
+          loadWallpaper(defaultUrl, taskToken, 1);
+        }, 1000);
+        cancelWallpaperLoad = () => window.clearTimeout(retryId);
+      } else {
+        console.warn(`默认壁纸${reason}，继续使用当前背景。`);
+      }
+    },
+  });
+  if (task.pending) cancelWallpaperLoad = task.cancel;
 }
 
 function startClockUpdates() {
@@ -1466,7 +1360,6 @@ async function initialise() {
   updateFavicon(DEFAULT_SITE_SETTINGS.siteLogo, DEFAULT_SITE_SETTINGS.siteName);
   updateFooter(DEFAULT_SITE_SETTINGS.footer);
   applyGlassOpacity(DEFAULT_SITE_SETTINGS.glassOpacity);
-  syncRunningDaysInline();
 
 
   showCollection(activeCollection);

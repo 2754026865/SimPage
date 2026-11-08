@@ -1,5 +1,20 @@
 const themeToggle = document.getElementById("theme-toggle");
 const body = document.body;
+let memoryTheme = null;
+let storageAvailable = true;
+
+function readTheme() {
+  try { if (storageAvailable) memoryTheme = localStorage.getItem("theme"); } catch (_error) { storageAvailable = false; }
+  return memoryTheme === "dark" || memoryTheme === "light" ? memoryTheme : null;
+}
+
+function saveTheme(theme) {
+  memoryTheme = theme;
+  try {
+    if (theme) localStorage.setItem("theme", theme);
+    else localStorage.removeItem("theme");
+  } catch (_error) { storageAvailable = false; }
+}
 
 // 应用指定的主题到文档
 const applyTheme = (theme) => {
@@ -14,7 +29,7 @@ const applyTheme = (theme) => {
 
 // 同步当前主题，优先使用本地存储，否则根据系统设置
 const syncTheme = () => {
-  const savedTheme = localStorage.getItem("theme");
+  const savedTheme = readTheme();
   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
 
   if (savedTheme) {
@@ -26,7 +41,7 @@ const syncTheme = () => {
 
 // 处理主题切换按钮的点击事件
 const toggleTheme = () => {
-  const savedTheme = localStorage.getItem("theme");
+  const savedTheme = readTheme();
   const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
   const systemTheme = prefersDark ? "dark" : "light";
   const currentTheme = savedTheme || systemTheme;
@@ -34,10 +49,10 @@ const toggleTheme = () => {
   if (currentTheme === systemTheme) {
     // 当前主题与系统一致，切换到相反的主题作为覆盖
     const newTheme = systemTheme === "dark" ? "light" : "dark";
-    localStorage.setItem("theme", newTheme);
+    saveTheme(newTheme);
   } else {
     // 当前主题是覆盖状态，移除覆盖，回归到系统主题
-    localStorage.removeItem("theme");
+    saveTheme(null);
   }
   
   syncTheme();

@@ -1,6 +1,10 @@
 import { getAssetFromKV } from "@cloudflare/kv-asset-handler";
 import { Router } from "itty-router";
 import manifest from "__STATIC_CONTENT_MANIFEST";
+import { handleGetWallpaper, handleFetchLogo, fetchOpenMeteoWeather, runTasksWithConcurrency, WEATHER_MAX_CONCURRENCY } from "./server/upstream.mjs";
+import { AppStateCore, isSessionToken } from "./server/state.mjs";
+import { readBoundedJson, AUTH_BODY_LIMIT, DATA_BODY_LIMIT, MAX_COLLECTION_ITEMS, inputError, limitedText, checkedUrl, checkedIcon, requiredVersion } from "./server/request.mjs";
+import { DEFAULT_SETTINGS, WEATHER_MAX_CITIES, parseWeatherCities, normaliseFooterValue, normaliseVisualSettings, normaliseItemFields } from "./public/scripts/lib/shared.js";
 
 const assetManifest = JSON.parse(manifest);
 const router = Router();
@@ -10,15 +14,7 @@ const router = Router();
 // Constants and Defaults
 // =================================================================================
 
-const BASE_DEFAULT_SETTINGS = Object.freeze({
-  siteName: "SimPage",
-  siteLogo: "",
-  greeting: "",
-  footer: "",
-  glassOpacity: 40, // 🆕 添加默认透明度
-  useWallpaper: true, // 🆕 添加
-  wallpaperUrl: "/api/wallpaper",
-});
+const BASE_DEFAULT_SETTINGS = DEFAULT_SETTINGS;
 
 const DEFAULT_STATS = Object.freeze({
   visitorCount: 0,
@@ -36,8 +32,6 @@ const VISITOR_COUNTER_DO_NAME = "global";
 const VISITOR_COUNTER_STORAGE_KEY = "count";
 
 const SESSION_TTL_SECONDS = 12 * 60 * 60; // 12 hours in seconds
-const SESSION_REVOKED_MARKER = "revoked";
-const SESSION_REVOKED_TTL_SECONDS = 60; // 覆盖 KV 最终一致性窗口
 const AUTH_HEADER_PREFIX = "Bearer ";
 const SESSION_COOKIE_NAME = "simpage_session";
 const VISITOR_COOKIE_NAME = "simpage_visitor";
@@ -47,15 +41,10 @@ const COOKIE_MAX_AGE = SESSION_TTL_SECONDS;
 const MAX_PASSWORD_LENGTH = 256;
 const LOGIN_FAIL_THRESHOLD = 5;
 const LOGIN_LOCK_DURATION_MS = 5 * 60 * 1000; // 5 minutes
-const LOGIN_RATE_LIMIT_DO_NAME = "global";
 const PBKDF2_ITERATIONS_LEGACY = 100000;
 const PBKDF2_ITERATIONS_CURRENT = 600000;
 const PBKDF2_ALGO_LEGACY = "pbkdf2-sha256-100k";
 const PBKDF2_ALGO_CURRENT = "pbkdf2-sha256-600k";
-const ICON_LINK_API_URL = "https://iconcc.439933.xyz/api/icon";
-// IconLink requires this Origin header for server-to-server API requests.
-const ICON_LINK_API_REQUEST_ORIGIN = "https://nav.439933.xyz";
-const ICON_LINK_API_TIMEOUT_MS = 30000;
 
 // =================================================================================
 // API Routes
@@ -66,10 +55,11 @@ router.get("/api/data", handleGetData);
 router.get("/api/weather", handleGetWeather);
 router.get("/api/wallpaper", handleGetWallpaper);
 router.get("/api/admin/data", requireAuth, handleGetAdminData);
-router.put("/api/admin/data", requireAuth, handleDataUpdate);
-router.patch("/api/admin/apps", requireAuth, handlePatchApps);
-router.patch("/api/admin/bookmarks", requireAuth, handlePatchBookmarks);
-router.patch("/api/admin/settings", requireAuth, handlePatchSettings);
+router.put("/api/admin/data", requireAuth, handleRetiredAdminWrite);
+router.patch("/api/admin/data", requireAuth, handleBatchDataUpdate);
+router.patch("/api/admin/apps", requireAuth, handleRetiredAdminWrite);
+router.patch("/api/admin/bookmarks", requireAuth, handleRetiredAdminWrite);
+router.patch("/api/admin/settings", requireAuth, handleRetiredAdminWrite);
 router.post("/api/admin/password", requireAuth, handlePasswordUpdate);
 router.get("/api/fetch-logo", requireAuth, handleFetchLogo);
 router.post("/api/logout", handleLogout);
@@ -184,7 +174,7 @@ export default {
       const errorResponse = buildErrorResponse(error, env);
       return applySecurityHeaders(
         new Response(JSON.stringify(errorResponse, null, 2), {
-          status: 500,
+          status: error?.statusCode || 500,
           headers: { "Content-Type": "application/json;charset=UTF-8" },
         }),
         request
@@ -245,38 +235,44 @@ export class LoginRateLimitDO {
 
   async fetch(request) {
     const url = new URL(request.url);
-    const ip = url.searchParams.get("ip") || "unknown";
     const now = Date.now();
-    const stored = (await this.state.storage.get(ip)) || { fails: 0, lockedUntil: 0 };
-
-    // 锁已过期则重置
-    if (stored.lockedUntil > 0 && stored.lockedUntil <= now) {
-      stored.fails = 0;
-      stored.lockedUntil = 0;
+    if (url.pathname === "/retire" && request.method === "POST") {
+      // Only the old global instance is called here by the state migration.
+      await this.state.storage.deleteAll();
+      return jsonSuccess();
     }
-
-    if (url.pathname === "/check") {
-      const locked = stored.lockedUntil > now;
-      return jsonSuccess({ locked, retryAfterMs: locked ? stored.lockedUntil - now : 0 });
+    if (url.pathname === "/reserve") {
+      const result = await this.state.storage.transaction(async tx => {
+        const previous = await tx.get("attempts") || [];
+        const attempts = previous.filter(time => time > now - LOGIN_LOCK_DURATION_MS);
+        if (attempts.length >= LOGIN_FAIL_THRESHOLD) return { locked: true, retryAfterMs: attempts[0] + LOGIN_LOCK_DURATION_MS - now };
+        attempts.push(now);
+        await tx.put("attempts", attempts);
+        await tx.setAlarm(attempts.at(-1) + LOGIN_LOCK_DURATION_MS);
+        return { locked: false, retryAfterMs: 0 };
+      });
+      return jsonSuccess(result);
     }
-
-    if (url.pathname === "/fail") {
-      stored.fails += 1;
-      if (stored.fails >= LOGIN_FAIL_THRESHOLD) {
-        stored.lockedUntil = now + LOGIN_LOCK_DURATION_MS;
-        stored.fails = 0;
-      }
-      await this.state.storage.put(ip, stored);
-      const locked = stored.lockedUntil > now;
-      return jsonSuccess({ locked, retryAfterMs: locked ? stored.lockedUntil - now : 0 });
-    }
-
-    if (url.pathname === "/success") {
-      await this.state.storage.delete(ip);
-      return jsonSuccess({});
-    }
-
     return new Response("Not Found", { status: 404 });
+  }
+
+  async alarm() {
+    // A delayed alarm must not erase attempts accepted after it was scheduled.
+    await this.state.storage.transaction(async tx => {
+      const attempts = ((await tx.get("attempts")) || []).filter(time => time > Date.now() - LOGIN_LOCK_DURATION_MS);
+      if (attempts.length) {
+        await tx.put("attempts", attempts);
+        await tx.setAlarm(attempts.at(-1) + LOGIN_LOCK_DURATION_MS);
+      } else {
+        await tx.delete("attempts");
+      }
+    });
+  }
+}
+
+export class AppStateDO extends AppStateCore {
+  constructor(state, env) {
+    super(state, env, { createDefaultData, createCredentials: createAdminCredentialsFromPassword });
   }
 }
 
@@ -380,7 +376,7 @@ function redirectWithBase(request, pathname, status = 302) {
 
 
 async function handleLogin(request, env, ctx) {
-  const body = await request.json().catch(() => null);
+  const body = await readBoundedJson(request, AUTH_BODY_LIMIT);
   const password = typeof body?.password === "string" ? body.password : "";
   if (!password) {
     return jsonFailure("请输入密码。", 400);
@@ -390,7 +386,7 @@ async function handleLogin(request, env, ctx) {
   }
 
   const clientIp = getClientIp(request);
-  const lockState = await callLoginRateLimit(env, "/check", clientIp);
+  const lockState = await callLoginRateLimit(env, "/reserve", clientIp);
   if (lockState.locked) {
     const retryAfterSec = Math.max(1, Math.ceil(lockState.retryAfterMs / 1000));
     const response = jsonFailure("尝试次数过多,请稍后再试。", 429);
@@ -399,16 +395,10 @@ async function handleLogin(request, env, ctx) {
   }
 
   const fullData = await readFullDataFresh(env);
-  let admin = fullData.admin;
+  const admin = fullData.admin;
 
   if (!admin || !admin.passwordSalt || !admin.passwordHash) {
-    const bootstrapPassword = resolveBootstrapPassword(env);
-    if (!bootstrapPassword) {
-      return jsonFailure("后台初始密码未配置。", 503);
-    }
-    admin = await createAdminCredentialsFromPassword(bootstrapPassword);
-    fullData.admin = admin;
-    await writeFullData(env, fullData);
+    return jsonFailure("后台初始密码未配置。", 503);
   }
 
   const isMatch = await verifyPassword(
@@ -418,56 +408,14 @@ async function handleLogin(request, env, ctx) {
     admin.passwordHashAlgo
   );
   if (!isMatch) {
-    const failState = await callLoginRateLimit(env, "/fail", clientIp);
-    if (failState.locked) {
-      const retryAfterSec = Math.max(1, Math.ceil(failState.retryAfterMs / 1000));
-      const response = jsonFailure("尝试次数过多,请稍后再试。", 429);
-      response.headers.set("Retry-After", String(retryAfterSec));
-      return response;
-    }
     return jsonFailure("密码错误。", 401);
   }
 
-  // 登录成功:清除失败计数(异步,不阻塞响应)
-  if (hasLoginRateLimitBinding(env)) {
-    const clearTask = callLoginRateLimit(env, "/success", clientIp);
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(clearTask);
-    } else {
-      void clearTask;
-    }
-  }
-
-  // 旧算法登录成功后,异步升级到当前算法,不阻塞响应
-  if (admin.passwordHashAlgo !== PBKDF2_ALGO_CURRENT) {
-    const upgradeTask = (async () => {
-      try {
-        const next = await createAdminCredentialsFromPassword(password);
-        await commitFullData(env, (current) => {
-          // Only upgrade the credentials that this request actually verified.
-          // A password change while hashing must not be overwritten by this login.
-          if (current.admin?.passwordHash !== admin.passwordHash ||
-              current.admin?.passwordSalt !== admin.passwordSalt ||
-              current.admin?.passwordHashAlgo !== admin.passwordHashAlgo) {
-            throw Object.assign(new Error("Credentials changed during hash upgrade"), { credentialsChanged: true });
-          }
-          return { ...current, admin: next };
-        });
-      } catch (error) {
-        if (!error?.credentialsChanged) {
-          console.error("Auto-upgrade password hash failed:", error);
-        }
-      }
-    })();
-    if (ctx && typeof ctx.waitUntil === "function") {
-      ctx.waitUntil(upgradeTask);
-    } else {
-      void upgradeTask;
-    }
-  }
-
   const token = generateToken();
-  await env.SESSIONS.put(token, "active", { expirationTtl: SESSION_TTL_SECONDS });
+  const upgradedAdmin = admin.passwordHashAlgo !== PBKDF2_ALGO_CURRENT
+    ? await createAdminCredentialsFromPassword(password) : null;
+  await callAppState(env, "/session/create", { token, verifiedAdmin: admin, upgradedAdmin });
+  fullDataCache = null;
 
   const response = jsonSuccess();
   response.headers.set("Set-Cookie", buildSessionCookie(token));
@@ -540,7 +488,7 @@ async function handleGetWeather(request, env, ctx) {
 }
 
 async function handleGetAdminData(request, env) {
-  const fullData = await readFullData(env);
+  const fullData = await readFullDataFresh(env);
   const data = sanitiseData(fullData);
   data.visitorCount = await getPersistedVisitorCount(env, data.visitorCount);
   const weather = normaliseWeatherSettingsValue(
@@ -551,160 +499,50 @@ async function handleGetAdminData(request, env) {
   return jsonSuccess({ data });
 }
 
-async function handleDataUpdate(request, env) {
+function handleRetiredAdminWrite() {
+  return jsonFailure("管理页面已更新，请刷新后重试。", 410);
+}
+
+async function handleBatchDataUpdate(request, env) {
   try {
-    const body = await request.json().catch(() => null);
-    if (!body || typeof body !== "object") {
-      return jsonFailure("请求数据不能为空。", 400);
-    }
-
-    const hasInput = ["apps", "bookmarks", "settings", "stats"].some((key) =>
-      Object.prototype.hasOwnProperty.call(body, key)
-    );
-    if (!hasInput) {
-      return jsonFailure("请求数据不能为空。", 400);
-    }
-
-    const updated = await commitFullData(env, async (existing) => {
-      const settingsInput = body.settings ?? existing.settings;
-      const appsInput = Array.isArray(body.apps) ? body.apps : existing.apps;
-      const bookmarksInput = Array.isArray(body.bookmarks) ? body.bookmarks : existing.bookmarks;
-
-      const normalisedApps = normaliseCollection(appsInput, { label: "应用", type: "apps" });
-      const normalisedBookmarks = normaliseCollection(bookmarksInput, { label: "书签", type: "bookmarks" });
-      const normalisedSettings = normaliseSettingsInput(settingsInput);
-
-      const persistedVisitorCount = await getPersistedVisitorCount(
-        env,
-        existing.stats?.visitorCount || DEFAULT_STATS.visitorCount
-      );
-
-      const normalisedStats = {
-        visitorCount: persistedVisitorCount,
-        siteStartDate:
-          typeof body.stats?.siteStartDate === "string"
-            ? body.stats.siteStartDate
-            : existing.stats?.siteStartDate || null,
-      };
-
-      return {
-        ...existing,
-        settings: normalisedSettings,
-        apps: normalisedApps,
-        bookmarks: normalisedBookmarks,
-        stats: normalisedStats,
-        admin: existing.admin,
-      };
-    });
+    const body = await readJsonBody(request);
+    const expectedVersion = requiredVersion(body);
+    if (!isSessionToken(body.requestId)) throw inputError("缺少有效的请求编号。");
+    const operations = body.operations ?? {};
+    if (!operations || typeof operations !== "object" || Array.isArray(operations)) throw inputError("增量操作格式不正确。");
+    if (!body.settings && !body.stats && !operations.apps?.length && !operations.bookmarks?.length) throw inputError("请求数据不能为空。");
+    const digest = bufferToHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(body))));
+    const updated = await commitFullData(env, fullData => {
+      const next = { ...fullData };
+      for (const key of ["apps", "bookmarks"]) {
+        if (operations[key] === undefined) continue;
+        if (!Array.isArray(operations[key])) throw inputError("增量操作应为数组。");
+        if (!operations[key].length) continue;
+        const label = key === "apps" ? "应用" : "书签";
+        const collection = normaliseCollection(fullData[key] || [], { label, type: key });
+        applyCollectionPatchOperations(collection, operations[key], { label, type: key });
+        next[key] = normaliseCollection(collection, { label, type: key });
+      }
+      if (body.settings !== undefined) {
+        if (!body.settings || typeof body.settings !== "object" || Array.isArray(body.settings)) throw inputError("站点设置格式不正确。");
+        next.settings = normaliseSettingsInput({ ...fullData.settings, ...body.settings });
+      }
+      if (body.stats !== undefined) {
+        if (!body.stats || typeof body.stats !== "object" || Array.isArray(body.stats)) throw inputError("统计设置格式不正确。");
+        next.stats = { ...fullData.stats, siteStartDate: normaliseStartDate(body.stats.siteStartDate) };
+      }
+      return next;
+    }, { request, expectedVersion, requestId: body.requestId, digest });
     return jsonSuccess({ data: sanitiseData(updated) });
   } catch (error) {
-    const status = error?.statusCode || 400;
-    return jsonFailure(error?.message || "数据更新失败。", status);
+    return jsonFailure(error.statusCode ? error.message : "数据更新失败。", error.statusCode || 400);
   }
 }
 
-async function handlePatchApps(request, env) {
-  return patchCollectionData(request, env, {
-    key: "apps",
-    type: "apps",
-    label: "应用",
-  });
-}
-
-async function handlePatchBookmarks(request, env) {
-  return patchCollectionData(request, env, {
-    key: "bookmarks",
-    type: "bookmarks",
-    label: "书签",
-  });
-}
-
-async function patchCollectionData(request, env, { key, type, label }) {
-  try {
-    const body = await readJsonBody(request);
-    const operations = resolvePatchOperations(body);
-    if (!operations.length) {
-      return jsonFailure("请求数据不能为空。", 400);
-    }
-
-    const updated = await commitFullData(env, async (fullData) => {
-      const source = Array.isArray(fullData[key]) ? fullData[key] : [];
-      const collection = normaliseCollection(source, { label, type });
-      applyCollectionPatchOperations(collection, operations, { type, label });
-      return {
-        ...fullData,
-        [key]: collection,
-      };
-    });
-    const data = sanitiseData(updated);
-    return jsonSuccess({
-      data: {
-        [key]: data[key],
-      },
-    });
-  } catch (error) {
-    const status = error?.statusCode || 400;
-    return jsonFailure(error?.message || `${label} 增量更新失败。`, status);
-  }
-}
-
-async function handlePatchSettings(request, env) {
-  try {
-    const body = await readJsonBody(request);
-    const patch = extractSettingsPatchInput(body);
-
-    const hasInput = [
-      "siteName",
-      "siteLogo",
-      "greeting",
-      "footer",
-      "weather",
-      "weatherLocation",
-      "glassOpacity",
-      "useWallpaper",
-      "wallpaperUrl",
-    ].some((key) => Object.prototype.hasOwnProperty.call(patch, key));
-
-    if (!hasInput) {
-      return jsonFailure("请求数据不能为空。", 400);
-    }
-
-    const updated = await commitFullData(env, async (fullData) => {
-      const existingSettings =
-        fullData.settings && typeof fullData.settings === "object"
-          ? fullData.settings
-          : createDefaultSettings();
-      const mergedSettings = { ...existingSettings, ...patch };
-
-      if (Object.prototype.hasOwnProperty.call(patch, "weather")) {
-        mergedSettings.weather = patch.weather;
-      } else if (Object.prototype.hasOwnProperty.call(patch, "weatherLocation")) {
-        mergedSettings.weather = patch.weatherLocation;
-      } else {
-        mergedSettings.weather = existingSettings.weather ?? existingSettings.weatherLocation;
-      }
-
-      const normalisedSettings = normaliseSettingsInput(mergedSettings);
-      return {
-        ...fullData,
-        settings: normalisedSettings,
-      };
-    });
-    const data = sanitiseData(updated);
-    return jsonSuccess({
-      data: {
-        settings: data.settings,
-      },
-    });
-  } catch (error) {
-    const status = error?.statusCode || 400;
-    return jsonFailure(error?.message || "站点设置增量更新失败。", status);
-  }
-}
 
 
 async function handlePasswordUpdate(request, env) {
-  const body = await request.json().catch(() => null);
+  const body = await readBoundedJson(request, AUTH_BODY_LIMIT);
   const currentPassword = typeof body?.currentPassword === "string" ? body.currentPassword : "";
   const newPasswordRaw = typeof body?.newPassword === "string" ? body.newPassword : "";
 
@@ -723,7 +561,14 @@ async function handlePasswordUpdate(request, env) {
   }
 
   try {
-    await commitFullData(env, async (fullData) => {
+    const lockState = await callLoginRateLimit(env, "/reserve", getClientIp(request));
+    if (lockState.locked) {
+      const response = jsonFailure("尝试次数过多，请稍后再试。", 429);
+      response.headers.set("Retry-After", String(Math.max(1, Math.ceil(lockState.retryAfterMs / 1000))));
+      return response;
+    }
+    const rotateToken = generateToken();
+    const updated = await commitFullData(env, async (fullData) => {
       const admin = fullData.admin;
       if (!admin || !admin.passwordHash || !admin.passwordSalt) {
         throw Object.assign(new Error("密码修改功能暂不可用。"), { statusCode: 500 });
@@ -754,11 +599,13 @@ async function handlePasswordUpdate(request, env) {
         ...fullData,
         admin: nextAdmin,
       };
-    });
-    return jsonSuccess({ message: "密码已更新，下次登录请使用新密码。" });
+    }, { request, rotateToken });
+    const response = jsonSuccess({ message: "密码已更新，其他设备的登录已失效。", data: { _version: updated._version } });
+    response.headers.set("Set-Cookie", buildSessionCookie(rotateToken));
+    return response;
   } catch (error) {
     const status = error?.statusCode || 500;
-    return jsonFailure(error?.message || "密码更新失败。", status);
+    return jsonFailure(error.statusCode ? error.message : "密码更新失败。", status);
   }
 }
 
@@ -812,219 +659,10 @@ function parseDateAsLocalDay(value) {
 }
 
 
-const WALLPAPER_UPSTREAM_URL = "https://api.bimg.cc/today";
-const WALLPAPER_FRESH_SECONDS = 30 * 60;
-const WALLPAPER_RETAIN_SECONDS = 24 * 60 * 60;
-const WALLPAPER_MAX_BYTES = 8 * 1024 * 1024;
-
-async function handleGetWallpaper(request, env, ctx) {
-  const cache = typeof caches !== "undefined" ? caches.default : null;
-  // Ignore incoming query strings and keep the previous provider's cache separate.
-  const cacheKey = new Request(new URL("/__cache/wallpaper/bimg-v1", request.url));
-  let cached = null;
-  let cachedAge = Infinity;
-  try {
-    cached = cache ? await cache.match(cacheKey) : null;
-    const storedAt = Number(cached?.headers.get("X-Wallpaper-Cached-At"));
-    cachedAge = storedAt > 0 ? (Date.now() - storedAt) / 1000 : Infinity;
-    if (cachedAge < 0 || cachedAge >= WALLPAPER_RETAIN_SECONDS) {
-      cached = null;
-    }
-  } catch (_error) {
-    // A cache failure must not prevent a direct image request.
-  }
-  if (cached && cachedAge < WALLPAPER_FRESH_SECONDS) {
-    return wallpaperClientResponse(cached, "hit", Math.max(1, Math.floor(WALLPAPER_FRESH_SECONDS - cachedAge)));
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
-  try {
-    const response = await fetchWallpaperImage(controller.signal);
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new Error("Wallpaper upstream returned an error");
-    }
-    const contentType = (response.headers.get("Content-Type") || "").split(";", 1)[0].trim().toLowerCase();
-    if (!["image/webp", "image/jpeg", "image/png", "image/avif"].includes(contentType)) {
-      await response.body?.cancel();
-      throw new Error("Wallpaper upstream did not return an image");
-    }
-    const image = await readWallpaperImage(response);
-    const stored = new Response(image, {
-      status: 200,
-      headers: {
-        "Content-Type": contentType,
-        "Content-Length": String(image.byteLength),
-        // Keep one successful image for a day; freshness is checked explicitly above.
-        "Cache-Control": `public, max-age=${WALLPAPER_RETAIN_SECONDS}`,
-        "X-Wallpaper-Cached-At": String(Date.now()),
-        "Referrer-Policy": "no-referrer",
-      },
-    });
-    if (cache) {
-      const cacheCopy = stored.clone();
-      const save = Promise.resolve().then(() => cache.put(cacheKey, cacheCopy)).catch(() => {});
-      if (ctx?.waitUntil) ctx.waitUntil(save);
-      else await save;
-    }
-    return wallpaperClientResponse(stored, "fresh", WALLPAPER_FRESH_SECONDS);
-  } catch (error) {
-    if (cached) return wallpaperClientResponse(cached, "stale", 60);
-    console.warn("每日壁纸暂时不可用:", error?.name === "AbortError" ? "上游请求超时" : "上游图片加载失败");
-    return new Response(JSON.stringify({ ok: false, error: "每日壁纸暂时不可用" }), {
-      status: error?.name === "AbortError" ? 504 : 502,
-      headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
-    });
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-function wallpaperClientResponse(response, state, maxAge) {
-  const headers = new Headers(response.headers);
-  headers.delete("X-Wallpaper-Cached-At");
-  headers.set("Cache-Control", `public, max-age=${maxAge}`);
-  headers.set("X-Wallpaper-Cache", state);
-  return new Response(response.body, { status: 200, headers });
-}
-
-async function fetchWallpaperImage(signal) {
-  let url = new URL(WALLPAPER_UPSTREAM_URL);
-  for (let redirects = 0; redirects <= 3; redirects++) {
-    // The daily endpoint redirects to Bing. Never follow a redirect to an arbitrary host.
-    if (url.protocol !== "https:" || url.username || url.password || url.port ||
-        !(url.hostname === "api.bimg.cc" || url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) {
-      throw new Error("Unsupported wallpaper redirect");
-    }
-    const response = await fetch(url.href, {
-      headers: { Accept: "image/webp,image/*;q=0.9" },
-      redirect: "manual",
-      signal,
-    });
-    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-    const location = response.headers.get("Location");
-    await response.body?.cancel();
-    if (!location) throw new Error("Missing wallpaper redirect location");
-    url = new URL(location, url);
-  }
-  throw new Error("Too many wallpaper redirects");
-}
-
-async function readWallpaperImage(response) {
-  if (Number(response.headers.get("Content-Length")) > WALLPAPER_MAX_BYTES) {
-    await response.body?.cancel();
-    throw new Error("Wallpaper image is too large");
-  }
-  if (!response.body) throw new Error("Empty wallpaper image");
-  const reader = response.body.getReader();
-  const chunks = [];
-  let size = 0;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      size += value.byteLength;
-      if (size > WALLPAPER_MAX_BYTES) {
-        await reader.cancel();
-        throw new Error("Wallpaper image is too large");
-      }
-      chunks.push(value);
-    }
-  } finally {
-    reader.releaseLock();
-  }
-  if (!size) throw new Error("Empty wallpaper image");
-  const image = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    image.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return image;
-}
-
-async function handleFetchLogo(request, env) {
-  try {
-    const { searchParams } = new URL(request.url);
-    const targetUrl = searchParams.get("targetUrl");
-
-    if (!targetUrl || typeof targetUrl !== "string" || !targetUrl.trim()) {
-      return jsonFailure("缺少有效的 targetUrl 参数", 400);
-    }
-
-    const trimmed = targetUrl.trim();
-    if (trimmed.length > 2048) {
-      return jsonFailure("目标网址长度不能超过 2048 个字符。", 400);
-    }
-
-    let siteUrl;
-    try {
-      const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
-      siteUrl = new URL(candidate);
-    } catch (_error) {
-      return jsonFailure("无效的网址。", 400);
-    }
-
-    if (siteUrl.protocol !== "http:" && siteUrl.protocol !== "https:") {
-      return jsonFailure("网址仅支持 HTTP 或 HTTPS 协议。", 400);
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), ICON_LINK_API_TIMEOUT_MS);
-    let response;
-    let payload;
-    try {
-      response = await fetch(ICON_LINK_API_URL, {
-        method: "POST",
-        headers: {
-          "Accept": "application/json",
-          "Content-Type": "application/json",
-          "Origin": ICON_LINK_API_REQUEST_ORIGIN,
-        },
-        body: JSON.stringify({ url: siteUrl.toString() }),
-        signal: controller.signal,
-      });
-      payload = await response.json().catch((error) => {
-        if (error?.name === "AbortError") throw error;
-        return null;
-      });
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (!response.ok || !payload?.ok) {
-      const message =
-        typeof payload?.error === "string" && payload.error.trim()
-          ? payload.error.trim()
-          : `图标 API 请求失败（HTTP ${response.status}）`;
-      const status = response.status >= 400 && response.status < 500 ? response.status : 502;
-      return jsonFailure(message, status);
-    }
-
-    const logoUrl = typeof payload.short_url === "string" ? payload.short_url.trim() : "";
-    if (!/^https?:\/\//i.test(logoUrl)) {
-      return jsonFailure("图标 API 未返回有效的短链。", 502);
-    }
-
-    return jsonSuccess({ logoUrl });
-
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      return jsonFailure("获取网站图标超时，请稍后重试。", 504);
-    }
-    console.error("调用图标 API 失败:", error);
-    return jsonFailure("无法访问图标 API，请稍后重试。", 502);
-  }
-}
 async function handleLogout(request, env) {
   const token = getSessionTokenFromRequest(request);
-  if (token) {
-    // 用 revoked 标记覆盖原 active 值,在 KV 一致性窗口期内仍能识别为失效。
-    // 60 秒后自动过期清除,不占用长期空间。
-    await env.SESSIONS.put(token, SESSION_REVOKED_MARKER, {
-      expirationTtl: SESSION_REVOKED_TTL_SECONDS,
-    });
+  if (isSessionToken(token)) {
+    await callAppState(env, "/session/revoke", { token });
   }
   const response = jsonSuccess();
   response.headers.set("Set-Cookie", buildClearSessionCookie());
@@ -1044,15 +682,27 @@ async function requireAuth(request, env) {
   if (!session.isValid) {
     return jsonFailure("登录状态已失效，请重新登录。", 401);
   }
-  // The TTL is handled by KV, so if the session exists, it's valid.
+  // Session expiry, revocation and credential epochs are checked by AppStateDO.
 }
 
 // =================================================================================
-// Data Management (KV)
+// Authoritative data (Durable Object) and bounded public read cache
 // =================================================================================
 
-const DATA_KEY = "data";
 let fullDataCache = null;
+let visitorCountCache = null;
+let visitorCountRead = null;
+
+async function callAppState(env, pathname, body = {}) {
+  if (!env?.APP_STATE || typeof env.APP_STATE.idFromName !== "function") throw inputError("数据服务未配置，请联系站点管理员。", 503);
+  const stub = env.APP_STATE.get(env.APP_STATE.idFromName("global"));
+  const response = await stub.fetch(`https://app-state${pathname}`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || payload?.success !== true) throw inputError(payload?.message || "数据服务暂时不可用。", response.status >= 400 ? response.status : 503);
+  return payload.data;
+}
 
 async function readFullData(env, options = {}) {
   const bypassCache = options && options.bypassCache === true;
@@ -1063,81 +713,30 @@ async function readFullData(env, options = {}) {
     }
   }
 
-  const raw = await env.SIMPAGE_DATA.get(DATA_KEY);
-  if (!raw) {
-    const defaultData = await createDefaultData(env);
-    await writeFullData(env, defaultData);
-    return cloneData(defaultData);
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error("存储数据格式损坏，无法解析。");
-  }
-
-  if (!parsed.admin || !parsed.admin.passwordHash || !parsed.admin.passwordSalt) {
-    const bootstrapPassword = resolveBootstrapPassword(env);
-    if (bootstrapPassword) {
-      parsed.admin = await createAdminCredentialsFromPassword(bootstrapPassword);
-      await writeFullData(env, parsed);
-    }
-  }
-
+  const parsed = await callAppState(env, "/read");
   updateFullDataCache(parsed);
-  return cloneData(parsed);
+  return getCachedFullData() || parsed;
 }
 
 async function readFullDataFresh(env) {
   return readFullData(env, { bypassCache: true });
 }
 
-async function writeFullData(env, fullData) {
-  await env.SIMPAGE_DATA.put(DATA_KEY, JSON.stringify(fullData));
-  updateFullDataCache(fullData);
-}
-
-/**
- * 乐观锁写入:基于 _version 字段在写前再次校验,
- * 中间被其他会话改过则重试,达到上限抛 409。
- * 不能完全消除 KV 最终一致性窗口,但能在常见管理员单人场景下避免静默丢失更新。
- */
-async function commitFullData(env, mutator, retries = 3) {
-  let lastConflict = null;
-  for (let attempt = 0; attempt < retries; attempt++) {
-    const current = await readFullDataFresh(env);
-    const baseVersion = Number.isFinite(current?._version) ? current._version : 0;
-
-    const updated = await mutator(current);
-    if (!updated || typeof updated !== "object") {
-      throw new Error("写入失败:数据格式不正确。");
-    }
-
-    const verifyRaw = await env.SIMPAGE_DATA.get(DATA_KEY);
-    let verifyVersion = 0;
-    if (verifyRaw) {
-      try {
-        const parsed = JSON.parse(verifyRaw);
-        verifyVersion = Number.isFinite(parsed?._version) ? parsed._version : 0;
-      } catch (_error) {
-        verifyVersion = 0;
-      }
-    }
-
-    if (verifyVersion !== baseVersion) {
-      lastConflict = Object.assign(
-        new Error("数据已被其他会话修改,请刷新后重试。"),
-        { statusCode: 409 }
-      );
-      continue;
-    }
-
-    updated._version = baseVersion + 1;
-    await writeFullData(env, updated);
-    return updated;
+async function commitFullData(env, mutator, { request, expectedVersion, requestId, digest, rotateToken } = {}) {
+  const current = await readFullDataFresh(env);
+  const token = getSessionTokenFromRequest(request);
+  if (expectedVersion !== undefined && expectedVersion !== current._version) {
+    return callAppState(env, "/commit", { token, expectedVersion, requestId, digest, data: null });
   }
-  throw lastConflict || new Error("写入失败,请重试。");
+  const updated = await mutator(cloneData(current));
+  if (!updated || typeof updated !== "object") throw inputError("写入失败：数据格式不正确。");
+  if (new TextEncoder().encode(JSON.stringify(updated)).byteLength > DATA_BODY_LIMIT) throw inputError("站点数据总量超出大小限制。", 413);
+  const committed = await callAppState(env, "/commit", {
+    token, expectedVersion: expectedVersion ?? current._version,
+    data: updated, requestId, digest, rotateToken,
+  });
+  updateFullDataCache(committed);
+  return committed;
 }
 
 async function incrementVisitorCountAndReadData(env, ctx) {
@@ -1153,11 +752,8 @@ async function incrementVisitorCountAndReadData(env, ctx) {
       const nextVisitorCount = await incrementVisitorCountFromDO(env, currentCount);
       sanitised.visitorCount = nextVisitorCount;
 
-      const cachedData = {
-        ...fullData,
-        stats: { ...fullData.stats, visitorCount: nextVisitorCount },
-      };
-      updateFullDataCache(cachedData);
+      // Counting visits must never renew or overwrite a configuration snapshot.
+      cacheVisitorCount(nextVisitorCount);
       return sanitised;
     } catch (error) {
       console.error("Visitor counter DO increment failed, returning last-known count:", error);
@@ -1187,6 +783,7 @@ function sanitiseData(fullData) {
   const runningDays = calculateRunningDays(siteStartDate);
 
   return {
+    _version: Number.isSafeInteger(fullData._version) ? fullData._version : 0,
     settings: {
       siteName: sourceSettings.siteName || defaults.siteName,
       siteLogo: sourceSettings.siteLogo || defaults.siteLogo,
@@ -1197,8 +794,8 @@ function sanitiseData(fullData) {
       useWallpaper: visualSettings.useWallpaper,
       wallpaperUrl: visualSettings.wallpaperUrl,
     },
-    apps: fullData.apps?.map((item) => ({ ...item })) || [],
-    bookmarks: fullData.bookmarks?.map((item) => ({ ...item })) || [],
+    apps: Array.isArray(fullData.apps) ? fullData.apps : [],
+    bookmarks: Array.isArray(fullData.bookmarks) ? fullData.bookmarks : [],
     visitorCount: fullData.stats?.visitorCount || DEFAULT_STATS.visitorCount,
     runningDays, // 🆕 添加
     siteStartDate, // 🆕 添加（用于后台编辑）
@@ -1211,16 +808,19 @@ function sanitiseData(fullData) {
 }
 
 function normaliseSettingsInput(input) {
-  const siteName = typeof input?.siteName === "string" ? input.siteName.trim() : "";
-  if (!siteName) throw new Error("网站名称不能为空。");
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw inputError("站点设置格式不正确。");
+  const siteName = limitedText(input.siteName, "网站名称", 120, { required: true });
   const visualSettings = normaliseVisualSettings(input);
+  visualSettings.wallpaperUrl = checkedUrl(visualSettings.wallpaperUrl, "壁纸地址", { allowRelative: true });
+  const footer = normaliseFooterValue(input.footer);
+  if (footer.length > 20000) throw inputError("页脚不能超过 20000 个字符。");
 
   return {
     siteName,
-    siteLogo: typeof input?.siteLogo === "string" ? input.siteLogo.trim() : "",
-    greeting: typeof input?.greeting === "string" ? input.greeting.trim() : "",
-    footer: normaliseFooterValue(input?.footer),
-    weather: normaliseWeatherSettingsInput(input?.weather),
+    siteLogo: checkedIcon(input.siteLogo, "网站图标"),
+    greeting: limitedText(input.greeting, "问候语", 500),
+    footer,
+    weather: normaliseWeatherSettingsInput(input.weather ?? input.weatherLocation),
     glassOpacity: visualSettings.glassOpacity,
     useWallpaper: visualSettings.useWallpaper,
     wallpaperUrl: visualSettings.wallpaperUrl,
@@ -1228,12 +828,13 @@ function normaliseSettingsInput(input) {
 }
 
 function normaliseCollection(value, { label, type }) {
-  if (!Array.isArray(value)) throw new Error(`${label} 数据格式不正确，应为数组。`);
+  if (!Array.isArray(value)) throw inputError(`${label} 数据格式不正确，应为数组。`);
+  if (value.length > MAX_COLLECTION_ITEMS) throw inputError(`${label}最多允许 ${MAX_COLLECTION_ITEMS} 条。`);
   const seen = new Set();
   return value.map((item) => {
     const normalised = normaliseItem(item, type);
     if (seen.has(normalised.id)) {
-      normalised.id = crypto.randomUUID();
+      throw inputError(`${label}存在重复的条目编号。`);
     }
     seen.add(normalised.id);
     return normalised;
@@ -1241,29 +842,17 @@ function normaliseCollection(value, { label, type }) {
 }
 
 function normaliseItem(input, type) {
-  if (!input || typeof input !== "object") throw new Error("数据项格式不正确。");
-  const name = String(input.name || "").trim();
-  const url = String(input.url || "").trim();
-  if (!name) throw new Error("名称不能为空。");
-  if (!url) throw new Error("链接不能为空。");
-
-  const payload = {
-    id: typeof input.id === "string" && input.id.trim() ? input.id.trim() : crypto.randomUUID(),
-    name,
-    url: ensureUrlProtocol(url),
-    description: typeof input.description === "string" ? input.description.trim() : "",
-    icon: typeof input.icon === "string" ? input.icon.trim() : "",
-  };
+  if (!input || typeof input !== "object" || Array.isArray(input)) throw inputError("数据项格式不正确。");
+  const payload = normaliseItemFields(input, type, { trim: true });
+  payload.id = limitedText(input.id, "条目编号", 128) || crypto.randomUUID();
+  payload.name = limitedText(input.name, "名称", 120, { required: true });
+  payload.url = checkedUrl(input.url, "链接", { allowEmpty: false });
+  payload.description = limitedText(input.description, "描述", 1000);
+  payload.icon = checkedIcon(input.icon, "图标");
   if (type === "bookmarks") {
-    payload.category = typeof input.category === "string" ? input.category.trim() : "";
+    payload.category = limitedText(input.category, "分类", 120);
   }
   return payload;
-}
-
-function normaliseFooterValue(value) {
-  if (typeof value !== "string") return "";
-  const normalised = value.replace(/\r\n?/g, "\n");
-  return normalised.trim() ? normalised : "";
 }
 
 function normaliseWeatherSettingsValue(input) {
@@ -1276,14 +865,22 @@ function normaliseWeatherSettingsValue(input) {
 }
 
 function normaliseWeatherSettingsInput(rawWeather) {
-  if (!rawWeather || typeof rawWeather !== "object") {
+  if (rawWeather === undefined || rawWeather === null) {
     return createDefaultWeatherSettings();
   }
   const cities = parseWeatherCities(rawWeather);
   if (!cities.length) {
-    throw new Error("天气城市不能为空。");
+    throw inputError("天气城市不能为空。");
   }
+  if (cities.length > WEATHER_MAX_CITIES || cities.some(city => city.length > 80)) throw inputError(`天气最多支持 ${WEATHER_MAX_CITIES} 个城市，每个名称不超过 80 个字符。`);
   return { city: cities };
+}
+
+function normaliseStartDate(value) {
+  if (value === null || value === "") return null;
+  const clean = limitedText(value, "开始日期", 10, { required: true });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(clean) || !Number.isFinite(Date.parse(`${clean}T00:00:00Z`)) || new Date(`${clean}T00:00:00Z`).toISOString().slice(0, 10) !== clean) throw inputError("开始日期格式不正确。");
+  return clean;
 }
 
 
@@ -1430,11 +1027,6 @@ function generateToken() {
   return crypto.randomUUID();
 }
 
-function ensureUrlProtocol(url) {
-  if (/^https?:\/\//i.test(url)) return url;
-  return `https://${url}`;
-}
-
 async function deriveHashHex(password, saltBuffer, iterations) {
   const keyMaterial = await crypto.subtle.importKey(
     "raw",
@@ -1501,236 +1093,39 @@ async function verifyPassword(password, saltHex, expectedHashHex, algo) {
 // Weather API Fetcher
 // =================================================================================
 
-const WEATHER_API_TIMEOUT_MS = 5000;
-const GEOLOCATION_MAX_RETRIES = 3;
-const GEOLOCATION_RETRY_DELAY_BASE_MS = 300;
-const WEATHER_MAX_CITIES = 8;
-const WEATHER_MAX_CONCURRENCY = 3;
 const PATCH_MAX_OPERATIONS = 200;
-
-function buildCacheableResponse(response, maxAgeSeconds) {
-  const headers = new Headers(response.headers);
-  headers.set("Cache-Control", `public, max-age=${maxAgeSeconds}`);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-}
-
-function cacheApiResponse(cache, url, response, maxAgeSeconds, ctx) {
-  const storedResponse = buildCacheableResponse(response, maxAgeSeconds);
-  const putPromise = cache.put(url, storedResponse);
-  if (ctx && typeof ctx.waitUntil === "function") {
-    ctx.waitUntil(putPromise);
-    return;
-  }
-  void putPromise.catch((error) => {
-    console.warn("cache.put failed:", error);
-  });
-}
-
-async function fetchAndCache(url, ctx) {
-  const cache = caches.default;
-  let response = await cache.match(url);
-
-  if (!response) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), WEATHER_API_TIMEOUT_MS);
-
-    try {
-      response = await fetch(url.toString(), {
-        signal: controller.signal,
-        headers: {
-          "Accept": "application/json",
-        },
-      });
-
-      // Clone the response to be able to read the body for caching and for returning
-      const cacheableResponse = response.clone();
-
-      if (response.ok) {
-        // Cache successful upstream responses for 15 minutes.
-        cacheApiResponse(cache, url, cacheableResponse, 900, ctx);
-      } else {
-        // Cache failure briefly as a circuit breaker to avoid hammering the API.
-        cacheApiResponse(cache, url, cacheableResponse, 60, ctx);
-      }
-    } finally {
-      clearTimeout(timeoutId);
-    }
-  }
-
-  if (!response.ok) {
-    throw createWeatherError(`API请求失败: ${response.status}`, response.status);
-  }
-
-  return response.json();
-}
-
-async function geocodeCity(cityName, ctx) {
-  const url = new URL("https://geocoding-api.open-meteo.com/v1/search");
-  url.searchParams.set("name", cityName);
-  url.searchParams.set("count", "1");
-  url.searchParams.set("language", "zh");
-  url.searchParams.set("format", "json");
-
-  let lastError = null;
-  for (let attempt = 0; attempt < GEOLOCATION_MAX_RETRIES; attempt++) {
-    try {
-      if (attempt > 0) {
-        const delay = GEOLOCATION_RETRY_DELAY_BASE_MS * Math.pow(2, attempt - 1);
-        await new Promise((resolve) => setTimeout(resolve, delay));
-      }
-
-      const payload = await fetchAndCache(url, ctx);
-
-      if (!payload?.results?.[0]) {
-        throw createWeatherError(`未找到城市 "${cityName}" 的地理位置信息。`, 404);
-      }
-      const { latitude, longitude, name } = payload.results[0];
-      if (typeof latitude !== "number" || typeof longitude !== "number") {
-        throw createWeatherError("地理位置信息无效。");
-      }
-      return { latitude, longitude, name: name || cityName }; // Success
-    } catch (error) {
-      lastError = error;
-      // Don't retry on client errors (e.g., 404 Not Found)
-      if (error?.statusCode >= 400 && error.statusCode < 500) {
-        throw error;
-      }
-      console.warn(
-        `geocodeCity failed (attempt ${attempt + 1}/${GEOLOCATION_MAX_RETRIES}), retrying...`,
-        error.message
-      );
-    }
-  }
-
-  // If the loop completes, all retries have failed.
-  throw lastError || createWeatherError("地理编码服务获取失败，且所有重试均告失败。", 502);
-}
-
-async function fetchOpenMeteoWeather(cityName, ctx) {
-  const location = await geocodeCity(cityName, ctx);
-  const url = new URL("https://api.open-meteo.com/v1/forecast");
-  url.searchParams.set("latitude", String(location.latitude));
-  url.searchParams.set("longitude", String(location.longitude));
-  url.searchParams.set("current_weather", "true");
-  url.searchParams.set("timezone", "auto");
-
-  const payload = await fetchAndCache(url, ctx);
-  const current = payload?.current_weather;
-  if (!current || typeof current !== "object") {
-    throw createWeatherError("天气数据格式异常。");
-  }
-
-  return {
-    text: getWeatherDescription(Number(current.weathercode)),
-    temperature: Number(current.temperature),
-    windspeed: Number(current.windspeed),
-    weathercode: Number(current.weathercode),
-    time: current.time || null,
-  };
-}
-
-function createWeatherError(message, statusCode = 502) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
-}
-
-function getWeatherDescription(code) {
-  const map = {
-    0: "晴天", 1: "晴朗", 2: "多云", 3: "阴天", 45: "雾", 48: "冻雾",
-    51: "小雨", 53: "中雨", 55: "大雨", 56: "小冻雨", 57: "冻雨",
-    61: "小雨", 63: "中雨", 65: "大雨", 66: "小冻雨", 67: "冻雨",
-    71: "小雪", 73: "中雪", 75: "大雪", 77: "雪粒", 80: "阵雨",
-    81: "中阵雨", 82: "大阵雨", 85: "小阵雪", 86: "大阵雪", 95: "雷雨",
-    96: "雷雨伴冰雹", 99: "雷雨伴大冰雹",
-  };
-  return map[code] || "未知";
-}
-
-async function runTasksWithConcurrency(tasks, concurrency) {
-  if (!Array.isArray(tasks) || tasks.length === 0) {
-    return [];
-  }
-
-  const limit = Math.max(1, Math.min(concurrency, tasks.length));
-  const results = new Array(tasks.length);
-  let nextIndex = 0;
-
-  const worker = async () => {
-    while (nextIndex < tasks.length) {
-      const index = nextIndex;
-      nextIndex += 1;
-      results[index] = await tasks[index]();
-    }
-  };
-
-  await Promise.all(Array.from({ length: limit }, () => worker()));
-  return results;
-}
 
 // =================================================================================
 // Utility Functions
 // =================================================================================
 
 async function readJsonBody(request) {
-  const body = await request.json().catch(() => null);
-  if (!body || typeof body !== "object") {
-    throw new Error("请求数据不能为空。");
-  }
-  return body;
-}
-
-function extractSettingsPatchInput(body) {
+  const body = await readBoundedJson(request);
   if (!body || typeof body !== "object" || Array.isArray(body)) {
-    throw new Error("请求数据不能为空。");
-  }
-  const candidate = body.settings;
-  if (candidate !== undefined) {
-    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) {
-      throw new Error("settings 数据格式不正确。");
-    }
-    return candidate;
+    throw inputError("请求数据不能为空。");
   }
   return body;
 }
 
-function resolvePatchOperations(body) {
-  if (Array.isArray(body)) {
-    return body;
-  }
-  if (!body || typeof body !== "object") {
-    return [];
-  }
-  if (Array.isArray(body.operations)) {
-    return body.operations;
-  }
-  if (typeof body.op === "string") {
-    return [body];
-  }
-  return [];
-}
 
 function applyCollectionPatchOperations(collection, operations, { type, label }) {
   if (!Array.isArray(operations) || operations.length === 0) {
-    throw new Error("缺少有效的增量操作。");
+    throw inputError("缺少有效的增量操作。");
   }
   if (operations.length > PATCH_MAX_OPERATIONS) {
-    throw new Error(`单次最多允许 ${PATCH_MAX_OPERATIONS} 条操作。`);
+    throw inputError(`单次最多允许 ${PATCH_MAX_OPERATIONS} 条操作。`);
   }
 
+  const byId = new Map(collection.map(item => [item.id, item]));
   for (let i = 0; i < operations.length; i += 1) {
     const operation = operations[i];
     if (!operation || typeof operation !== "object" || Array.isArray(operation)) {
-      throw new Error(`第 ${i + 1} 条操作格式不正确。`);
+      throw inputError(`第 ${i + 1} 条操作格式不正确。`);
     }
 
     const op = typeof operation.op === "string" ? operation.op.trim().toLowerCase() : "";
     if (!op) {
-      throw new Error(`第 ${i + 1} 条操作缺少 op 字段。`);
+      throw inputError(`第 ${i + 1} 条操作缺少 op 字段。`);
     }
 
     if (op === "upsert") {
@@ -1739,23 +1134,17 @@ function applyCollectionPatchOperations(collection, operations, { type, label })
           ? operation.item
           : operation;
       const normalised = normaliseItem(rawItem, type);
-      const existingIndex = collection.findIndex((item) => item.id === normalised.id);
-      if (existingIndex >= 0) {
-        collection[existingIndex] = normalised;
-      } else {
-        collection.push(normalised);
-      }
+      byId.set(normalised.id, normalised);
       continue;
     }
 
     if (op === "patch") {
       const id = typeof operation.id === "string" ? operation.id.trim() : "";
       if (!id) {
-        throw new Error(`第 ${i + 1} 条 patch 操作缺少 id。`);
+        throw inputError(`第 ${i + 1} 条 patch 操作缺少 id。`);
       }
-      const existingIndex = collection.findIndex((item) => item.id === id);
-      if (existingIndex < 0) {
-        throw new Error(`${label}不存在，id: ${id}`);
+      if (!byId.has(id)) {
+        throw inputError(`${label}不存在，id: ${id}`);
       }
 
       const changes =
@@ -1765,39 +1154,38 @@ function applyCollectionPatchOperations(collection, operations, { type, label })
           ? operation.item
           : null;
       if (!changes) {
-        throw new Error(`第 ${i + 1} 条 patch 操作缺少 changes/item。`);
+        throw inputError(`第 ${i + 1} 条 patch 操作缺少 changes/item。`);
       }
 
       const merged = {
-        ...collection[existingIndex],
+        ...byId.get(id),
         ...changes,
         id,
       };
-      collection[existingIndex] = normaliseItem(merged, type);
+      byId.set(id, normaliseItem(merged, type));
       continue;
     }
 
     if (op === "delete") {
       const id = typeof operation.id === "string" ? operation.id.trim() : "";
       if (!id) {
-        throw new Error(`第 ${i + 1} 条 delete 操作缺少 id。`);
+        throw inputError(`第 ${i + 1} 条 delete 操作缺少 id。`);
       }
-      const existingIndex = collection.findIndex((item) => item.id === id);
-      if (existingIndex < 0) {
-        throw new Error(`${label}不存在，id: ${id}`);
-      }
-      collection.splice(existingIndex, 1);
+      // Deleting an already absent item is a successful idempotent operation.
+      byId.delete(id);
       continue;
     }
 
-    throw new Error(`第 ${i + 1} 条操作不支持: ${op}`);
+    throw inputError(`第 ${i + 1} 条操作不支持: ${op}`);
   }
+  if (byId.size > MAX_COLLECTION_ITEMS) throw inputError(`${label}最多允许 ${MAX_COLLECTION_ITEMS} 条。`);
+  collection.splice(0, collection.length, ...byId.values());
 }
 
 function jsonResponse(data, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { "Content-Type": "application/json;charset=UTF-8" },
+    headers: { "Content-Type": "application/json;charset=UTF-8", "Cache-Control": "no-store" },
   });
 }
 
@@ -1816,12 +1204,12 @@ function jsonFailure(message, status = 400, extra = {}) {
 }
 function isProduction(env) {
   const mode = typeof env?.ENVIRONMENT === "string" ? env.ENVIRONMENT : env?.NODE_ENV;
-  return typeof mode === "string" && mode.toLowerCase() === "production";
+  return !(typeof mode === "string" && mode.toLowerCase() === "development");
 }
 
 function buildErrorResponse(error, env, fallbackMessage) {
   const message =
-    typeof error?.message === "string" && error.message.trim()
+    (error?.statusCode && error.statusCode < 500 || !isProduction(env)) && typeof error?.message === "string" && error.message.trim()
       ? error.message
       : fallbackMessage || "Server error";
   const payload = { success: false, message };
@@ -1833,13 +1221,13 @@ function buildErrorResponse(error, env, fallbackMessage) {
 
 async function resolveSession(request, env) {
   const token = getSessionTokenFromRequest(request);
-  if (!token) {
+  if (!isSessionToken(token)) {
     return { token: "", isValid: false };
   }
-  const session = await env.SESSIONS.get(token);
+  const session = await callAppState(env, "/session/resolve", { token });
   return {
     token,
-    isValid: Boolean(session) && session !== SESSION_REVOKED_MARKER,
+    isValid: session.isValid === true,
   };
 }
 
@@ -1854,24 +1242,22 @@ function hasLoginRateLimitBinding(env) {
 function getClientIp(request) {
   const direct = request.headers.get("cf-connecting-ip");
   if (direct && direct.trim()) return direct.trim();
-  const forwarded = request.headers.get("x-forwarded-for");
-  if (forwarded && forwarded.trim()) return forwarded.split(",")[0].trim();
   return "unknown";
 }
 
 async function callLoginRateLimit(env, action, ip) {
   if (!hasLoginRateLimitBinding(env)) {
-    return { locked: false, retryAfterMs: 0 };
+    throw inputError("登录保护服务暂时不可用，请稍后重试。", 503);
   }
   try {
-    const id = env.LOGIN_RATE_LIMIT.idFromName(LOGIN_RATE_LIMIT_DO_NAME);
+    const ipHash = bufferToHex(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ip)));
+    const id = env.LOGIN_RATE_LIMIT.idFromName(`ip:${ipHash}`);
     const stub = env.LOGIN_RATE_LIMIT.get(id);
     const url = new URL(`https://login-rate-limit${action}`);
-    url.searchParams.set("ip", ip);
     const response = await stub.fetch(url.toString());
     const payload = await response.json().catch(() => null);
     if (!response.ok || !payload || payload.success !== true) {
-      return { locked: false, retryAfterMs: 0 };
+      throw new Error("Invalid limiter response");
     }
     return {
       locked: Boolean(payload.locked),
@@ -1879,7 +1265,7 @@ async function callLoginRateLimit(env, action, ip) {
     };
   } catch (error) {
     console.error("Login rate limit DO call failed:", error);
-    return { locked: false, retryAfterMs: 0 };
+    throw inputError("登录保护服务暂时不可用，请稍后重试。", 503);
   }
 }
 
@@ -1920,33 +1306,54 @@ async function getVisitorCountFromDO(env, fallbackCount) {
 
 async function getPersistedVisitorCount(env, fallbackCount) {
   const fallback = toSafeNonNegativeInteger(fallbackCount, DEFAULT_STATS.visitorCount);
+  if (visitorCountCache && visitorCountCache.expiresAt > Date.now()) return visitorCountCache.value;
   if (!hasVisitorCounterBinding(env)) {
     return fallback;
   }
-  try {
-    return await getVisitorCountFromDO(env, fallback);
-  } catch (error) {
-    console.error("Visitor counter DO read failed, use fallback:", error);
-    return fallback;
+  if (!visitorCountRead) {
+    visitorCountRead = getVisitorCountFromDO(env, fallback)
+      .then(count => cacheVisitorCount(count))
+      .catch(error => {
+        console.error("Visitor counter DO read failed, use fallback:", error);
+        return visitorCountCache?.value ?? fallback;
+      })
+      .finally(() => { visitorCountRead = null; });
   }
+  return visitorCountRead;
+}
+
+function cacheVisitorCount(count) {
+  const value = Math.max(visitorCountCache?.value || 0, toSafeNonNegativeInteger(count));
+  visitorCountCache = { value, expiresAt: Date.now() + FULL_DATA_CACHE_TTL_MS };
+  return value;
 }
 
 function getCachedFullData() {
   if (!fullDataCache) {
     return null;
   }
-  if (Date.now() > fullDataCache.expiresAt) {
+  if (Date.now() >= fullDataCache.expiresAt) {
     fullDataCache = null;
     return null;
   }
-  return cloneData(fullDataCache.data);
+  return fullDataCache.data;
 }
 
 function updateFullDataCache(fullData) {
+  if (fullDataCache && fullDataCache.data._version > fullData._version) return;
   fullDataCache = {
-    data: cloneData(fullData),
+    // Read-only snapshots can be shared by readers. Only write paths clone.
+    data: freezeData(fullData),
     expiresAt: Date.now() + FULL_DATA_CACHE_TTL_MS,
   };
+}
+
+function freezeData(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeData(child);
+    Object.freeze(value);
+  }
+  return value;
 }
 
 function cloneData(data) {
@@ -1959,7 +1366,7 @@ function cloneData(data) {
 function parseCookies(request) {
   const cookieHeader = request.headers.get("Cookie") || "";
   const pairs = cookieHeader.split(";").map((part) => part.trim()).filter(Boolean);
-  const cookies = {};
+  const cookies = Object.create(null);
   for (const pair of pairs) {
     const index = pair.indexOf("=");
     if (index <= 0) continue;
@@ -1968,46 +1375,6 @@ function parseCookies(request) {
     cookies[key] = value;
   }
   return cookies;
-}
-
-function parseWeatherCities(input) {
-  if (typeof input === "string") {
-    return input.trim().split(/\s+/).filter(Boolean);
-  }
-  if (Array.isArray(input)) {
-    return input.map((city) => String(city).trim()).filter(Boolean);
-  }
-  if (input && typeof input === "object") {
-    const source = Object.prototype.hasOwnProperty.call(input, "city")
-      ? input.city
-      : input.weatherLocation;
-    return parseWeatherCities(source);
-  }
-  return [];
-}
-
-function normaliseVisualSettings(source) {
-  const normalised = {
-    glassOpacity: BASE_DEFAULT_SETTINGS.glassOpacity,
-    useWallpaper: BASE_DEFAULT_SETTINGS.useWallpaper,
-    wallpaperUrl: BASE_DEFAULT_SETTINGS.wallpaperUrl,
-  };
-
-  if (typeof source?.glassOpacity === "number") {
-    normalised.glassOpacity = Math.max(0, Math.min(100, Math.round(source.glassOpacity)));
-  }
-  if (typeof source?.useWallpaper === "boolean") {
-    normalised.useWallpaper = source.useWallpaper;
-  }
-  if (typeof source?.wallpaperUrl === "string") {
-    const trimmed = source.wallpaperUrl.trim();
-    if (trimmed) {
-      normalised.wallpaperUrl = trimmed === "https://bing.img.run/uhd.php"
-        ? BASE_DEFAULT_SETTINGS.wallpaperUrl
-        : trimmed;
-    }
-  }
-  return normalised;
 }
 
 function toSafeNonNegativeInteger(value, fallback = 0) {

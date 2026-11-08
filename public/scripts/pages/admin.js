@@ -1,7 +1,7 @@
 import { renderMarkdown } from "../lib/markdown.js";
 import {
   createFaviconController,
-  deriveFallbackIcon,
+  createItemIcon,
   normaliseFooterValue,
   replaceChildrenSafe,
   scrollToTop as sharedScrollToTop,
@@ -10,6 +10,7 @@ import {
 } from "../lib/ui.js";
 import { fetchJson, getPayloadData, getPayloadMessage } from "../lib/api.js";
 import { normaliseCollectionItems, normaliseWeatherSettingsForEditor } from "../lib/data.js";
+import { normaliseItemFields, normaliseSiteSettings, parseWeatherCities, WEATHER_MAX_CITIES } from "../lib/shared.js";
 
 const appsEditor = document.getElementById("apps-editor");
 const bookmarksEditor = document.getElementById("bookmarks-editor");
@@ -72,9 +73,6 @@ const typeLabels = {
 };
 
 const DATA_ENDPOINT = "/api/admin/data";
-const PATCH_APPS_ENDPOINT = "/api/admin/apps";
-const PATCH_BOOKMARKS_ENDPOINT = "/api/admin/bookmarks";
-const PATCH_SETTINGS_ENDPOINT = "/api/admin/settings";
 const PASSWORD_ENDPOINT = "/api/admin/password";
 
 const defaultDocumentTitle = document.title || "导航后台编辑";
@@ -129,7 +127,16 @@ const state = {
 
 let isDirty = false;
 let modalContext = null;
+let activeOperation = null;
+let lockedControls = [];
+let hasLoadedData = false;
+let pendingSave = null;
+let logoRequest = null;
+let logoRequestToken = 0;
+let lastPageIdentity = null;
+const fetchLogoButtonLabel = fetchLogoButton?.textContent || "自动获取";
 const savedSnapshot = {
+  _version: null,
   apps: [],
   bookmarks: [],
   settings: {
@@ -161,7 +168,7 @@ function markDirty() {
   if (!isDirty) {
     isDirty = true;
     if (saveButton) {
-      saveButton.disabled = false;
+      saveButton.disabled = Boolean(activeOperation) || !hasLoadedData;
     }
   }
 }
@@ -173,9 +180,26 @@ function resetDirty() {
   }
 }
 
+function beginOperation(name) {
+  if (activeOperation) return false;
+  cancelLogoRequest();
+  activeOperation = name;
+  lockedControls = Array.from(document.querySelectorAll("input, textarea, select, button"))
+    .map((control) => ({ control, disabled: control.disabled }));
+  lockedControls.forEach(({ control }) => { control.disabled = true; });
+  return true;
+}
+
+function endOperation() {
+  lockedControls.forEach(({ control, disabled }) => { control.disabled = disabled; });
+  lockedControls = [];
+  activeOperation = null;
+  if (saveButton) saveButton.disabled = !isDirty || !hasLoadedData;
+}
+
 function createBlankItem(type) {
   return {
-    id: "",
+    id: crypto.randomUUID(),
     name: "",
     url: "",
     description: "",
@@ -185,57 +209,7 @@ function createBlankItem(type) {
 }
 
 function normaliseSettingsIncoming(input) {
-  const prepared = {
-    siteName: defaultSettings.siteName,
-    siteLogo: defaultSettings.siteLogo,
-    greeting: defaultSettings.greeting,
-    footer: defaultSettings.footer,
-    weather: { ...defaultSettings.weather },
-    glassOpacity: defaultSettings.glassOpacity, // 🆕 添加
-    useWallpaper: defaultSettings.useWallpaper, // 🆕 添加
-    wallpaperUrl: defaultSettings.wallpaperUrl, // 🆕 添加
-  };
-
-  if (!input || typeof input !== "object") {
-    return prepared;
-  }
-
-  if (typeof input.siteName === "string" && input.siteName.trim()) {
-    prepared.siteName = input.siteName.trim();
-  }
-  if (typeof input.siteLogo === "string") {
-    prepared.siteLogo = input.siteLogo.trim();
-  }
-  // 🆕 添加 useWallpaper 处理
-  if (typeof input.useWallpaper === "boolean") {
-    prepared.useWallpaper = input.useWallpaper;
-  }
-  if (typeof input.greeting === "string") {
-    prepared.greeting = input.greeting.trim();
-  }
-  if (typeof input.footer === "string") {
-    prepared.footer = normaliseFooterValue(input.footer);
-  }
-  // 🆕 添加透明度处理
-  if (typeof input.glassOpacity === "number") {
-    const opacity = Math.max(0, Math.min(100, Math.round(input.glassOpacity)));
-    prepared.glassOpacity = opacity;
-  }
-
-  // 🆕 添加壁纸 URL 处理
-  if (typeof input.wallpaperUrl === "string") {
-    prepared.wallpaperUrl = input.wallpaperUrl.trim();
-  }
-
-  if (input.weather && typeof input.weather === "object") {
-    prepared.weather = normaliseWeatherSettingsIncoming(input.weather);
-  } else if (input.weatherLocation && typeof input.weatherLocation === "object") {
-    prepared.weather = normaliseWeatherSettingsIncoming({ weatherLocation: input.weatherLocation });
-  } else {
-    prepared.weather = normaliseWeatherSettingsIncoming(null);
-  }
-
-  return prepared;
+  return normaliseSiteSettings(input, { defaults: defaultSettings, weatherMode: "editor" });
 }
 
 function createDefaultWeatherSettings() {
@@ -249,21 +223,11 @@ function normaliseWeatherSettingsIncoming(raw) {
 }
 
 function toAppPayload(item) {
-  return {
-    id: typeof item?.id === "string" ? item.id.trim() : "",
-    name: typeof item?.name === "string" ? item.name.trim() : "",
-    url: typeof item?.url === "string" ? item.url.trim() : "",
-    description: typeof item?.description === "string" ? item.description.trim() : "",
-    icon: typeof item?.icon === "string" ? item.icon.trim() : "",
-  };
+  return normaliseItemFields(item, "apps", { trim: true });
 }
 
 function toBookmarkPayload(item) {
-  const base = toAppPayload(item);
-  return {
-    ...base,
-    category: typeof item?.category === "string" ? item.category.trim() : "",
-  };
+  return normaliseItemFields(item, "bookmarks", { trim: true });
 }
 
 function normaliseSiteStartDate(value) {
@@ -382,6 +346,7 @@ function updateWeatherSummary(weather) {
 }
 
 function handleWeatherInputChange() {
+  if (activeOperation) return;
   const nextWeather = collectWeatherSettingsFromInputs();
   state.settings.weather = nextWeather;
   updateWeatherSummary(nextWeather);
@@ -395,10 +360,14 @@ function validateWeatherSettings(weather) {
   if (!city) {
     return { valid: false, message: "请填写天气城市。", focus: siteWeatherCityInput };
   }
+  const cities = parseWeatherCities(city);
+  if (cities.length > WEATHER_MAX_CITIES) {
+    return { valid: false, message: `最多配置 ${WEATHER_MAX_CITIES} 个天气城市。`, focus: siteWeatherCityInput };
+  }
   return {
     valid: true,
     value: {
-      city,
+      city: cities.join(" "),
     },
   };
 }
@@ -461,32 +430,42 @@ function applySettingsToInputs(settings) {
 }
 
 function handleSettingsChange(field, value) {
-  if (!state.settings) return;
+  if (!state.settings || activeOperation) return;
   let nextValue = value;
   if (field === "footer") {
     nextValue = normaliseFooterValue(value);
     updateFooterPreview(nextValue);
   }
   state.settings[field] = nextValue;
-  updatePageIdentity(state.settings);
+  if (field === "siteName" || field === "siteLogo") {
+    updatePageIdentity(state.settings);
+  }
   markDirty();
   setStatus("站点信息已更新，记得保存。", "neutral");
 }
 
 function updatePageIdentity(settings) {
-  const siteName = settings?.siteName;
-  const siteLogo = settings?.siteLogo;
-  setDocumentTitle(siteName, {
-    defaultTitle: defaultDocumentTitle,
-    suffix: ADMIN_TITLE_SUFFIX,
-  });
-  updateFavicon(siteLogo, siteName);
+  const siteName = settings?.siteName || "";
+  const siteLogo = settings?.siteLogo || "";
+  if (!lastPageIdentity || siteName !== lastPageIdentity.siteName) {
+    setDocumentTitle(siteName, {
+      defaultTitle: defaultDocumentTitle,
+      suffix: ADMIN_TITLE_SUFFIX,
+    });
+  }
+  if (!lastPageIdentity || siteLogo !== lastPageIdentity.siteLogo ||
+      (!siteLogo && siteName !== lastPageIdentity.siteName)) {
+    updateFavicon(siteLogo, siteName);
+  }
+  lastPageIdentity = { siteName, siteLogo };
 }
 
-function render() {
-  renderList("apps", appsEditor, state.apps);
-  renderList("bookmarks", bookmarksEditor, state.bookmarks);
-  updateCategorySuggestions();
+function render(type) {
+  if (!type || type === "apps") renderList("apps", appsEditor, state.apps);
+  if (!type || type === "bookmarks") {
+    renderList("bookmarks", bookmarksEditor, state.bookmarks);
+    updateCategorySuggestions();
+  }
 }
 
 function renderList(type, container, items) {
@@ -693,29 +672,7 @@ function createNameCell(type, item, index) {
       ? item.name.trim()
       : `${typeLabels[type]} ${index + 1}`;
 
-  const iconWrapper = document.createElement("span");
-  iconWrapper.className = "admin-item-icon";
-  const iconContent = String(item.icon || "").trim();
-  if (iconContent.startsWith("http://") || iconContent.startsWith("https://") || iconContent.startsWith("data:")) {
-    const img = document.createElement("img");
-    img.src = iconContent;
-    img.alt = `${displayName} 图标`;
-    img.loading = "lazy";
-    img.decoding = "async";
-    img.referrerPolicy = "no-referrer";
-    img.addEventListener(
-      "error",
-      () => {
-        iconWrapper.textContent = deriveFallbackIcon(displayName);
-      },
-      { once: true }
-    );
-    iconWrapper.appendChild(img);
-  } else if (iconContent) {
-    iconWrapper.textContent = iconContent.slice(0, 4);
-  } else {
-    iconWrapper.textContent = deriveFallbackIcon(displayName);
-  }
+  const iconWrapper = createItemIcon({ name: displayName, icon: item.icon, className: "admin-item-icon" });
 
   wrapper.appendChild(iconWrapper);
 
@@ -781,11 +738,13 @@ function hideBookmarkCategoryField() {
 }
 
 function openEditor(type, index) {
+  if (activeOperation || !hasLoadedData) return;
+  cancelLogoRequest();
   const isNew = typeof index !== "number";
   const reference = isNew ? createBlankItem(type) : state[type][index];
   if (!reference) return;
 
-  modalContext = { type, index, isNew };
+  modalContext = { type, index, isNew, id: reference.id || crypto.randomUUID() };
 
   if (modalTitle) {
     modalTitle.textContent = isNew ? `添加${typeLabels[type]}` : `编辑${typeLabels[type]}`;
@@ -821,6 +780,8 @@ function showModal() {
 }
 
 function closeEditor() {
+  if (activeOperation) return;
+  cancelLogoRequest();
   if (!modal) return;
   modal.hidden = true;
   modal.setAttribute("aria-hidden", "true");
@@ -862,7 +823,7 @@ function collectPayloadFromModal() {
   const existingId =
     !modalContext.isNew && typeof modalContext.index === "number"
       ? state[type][modalContext.index]?.id || ""
-      : "";
+      : modalContext.id;
 
   const payload = {
     id: existingId,
@@ -881,7 +842,7 @@ function collectPayloadFromModal() {
 
 function applyModalChanges(event) {
   event.preventDefault();
-  if (!modalContext) return;
+  if (!modalContext || activeOperation) return;
 
   const payload = collectPayloadFromModal();
   if (!payload) return;
@@ -894,18 +855,18 @@ function applyModalChanges(event) {
     state[type][index] = { ...state[type][index], ...payload };
   }
 
-  render();
+  render(type);
   markDirty();
   setStatus(`${typeLabels[type]}已${modalContext.isNew ? "添加" : "更新"}，记得保存。`, "neutral");
   closeEditor();
 }
 
 function handleDelete(type, index) {
-  if (!Array.isArray(state[type])) return;
+  if (activeOperation || !Array.isArray(state[type])) return;
   const confirmed = window.confirm(`确定要删除该${typeLabels[type]}吗？`);
   if (!confirmed) return;
   state[type].splice(index, 1);
-  render();
+  render(type);
   markDirty();
   setStatus(`${typeLabels[type]}已删除，记得保存修改。`, "neutral");
 }
@@ -924,6 +885,11 @@ function buildSettingsPayload(settings) {
 }
 
 function updateStateFromResponse(data) {
+  if (!data || !Array.isArray(data.apps) || !Array.isArray(data.bookmarks) ||
+      !data.settings || typeof data.settings !== "object" || Array.isArray(data.settings) ||
+      !Number.isSafeInteger(data._version) || data._version < 0) {
+    throw new Error("后台数据响应不完整，当前编辑已保留，请稍后重试。");
+  }
   state.apps = normaliseCollectionItems(data?.apps, "apps");
   state.bookmarks = normaliseCollectionItems(data?.bookmarks, "bookmarks");
   state.settings = normaliseSettingsIncoming(data?.settings);
@@ -933,15 +899,17 @@ function updateStateFromResponse(data) {
   };
   applySettingsToInputs(state.settings);
   render();
+  savedSnapshot._version = data._version;
   syncSavedSnapshot();
+  hasLoadedData = true;
   resetDirty();
 }
 
 async function requestAuthJson(
   url,
-  { method = "GET", body, unauthorizedMessage = "登录已过期，请重新登录。" } = {}
+  { method = "GET", body, signal, timeoutMs, unauthorizedMessage = "登录已过期，请重新登录。" } = {}
 ) {
-  const options = { method };
+  const options = { method, signal, ...(timeoutMs === undefined ? {} : { timeoutMs }) };
   if (body !== undefined) {
     options.headers = { "Content-Type": "application/json" };
     options.body = JSON.stringify(body);
@@ -956,19 +924,23 @@ async function requestAuthJson(
     throw error;
   }
 
-  if (!response.ok) {
-    throw new Error(getPayloadMessage(payload, response.statusText || "请求失败"));
+  if (!response.ok || payload?.success !== true) {
+    const error = new Error(getPayloadMessage(payload, response.statusText || "请求失败"));
+    error.status = response.status;
+    throw error;
   }
 
   return payload;
 }
 
 async function loadData(showStatus = true) {
+  if (!beginOperation("loading")) return false;
   try {
     const payload = await requestAuthJson(DATA_ENDPOINT);
     const data = getPayloadData(payload);
 
     updateStateFromResponse(data);
+    pendingSave = null;
     if (showStatus) {
       setStatus("数据已加载。", "neutral");
     }
@@ -980,19 +952,26 @@ async function loadData(showStatus = true) {
     console.error("加载数据失败", error);
     setStatus(error.message || "无法加载数据", "error");
     return false;
+  } finally {
+    endOperation();
   }
 }
 
 async function saveChanges() {
-  if (!saveButton) return;
-
-  saveButton.disabled = true;
-  setStatus("正在保存修改...", "neutral");
+  if (!saveButton || activeOperation) return;
+  if (!hasLoadedData) {
+    setStatus("请先成功加载后台数据，再保存修改。", "error");
+    return;
+  }
+  if (modalContext) {
+    setModalError("请先保存或取消当前条目编辑，再保存站点修改。");
+    modalNameInput?.focus();
+    return;
+  }
 
   const weatherValidation = validateWeatherSettings(state.settings.weather);
   if (!weatherValidation.valid) {
     setStatus(weatherValidation.message, "error");
-    saveButton.disabled = false;
     if (weatherValidation.focus && typeof weatherValidation.focus.focus === "function") {
       weatherValidation.focus.focus();
     }
@@ -1012,7 +991,6 @@ async function saveChanges() {
   const payloadSettings = buildSettingsPayload(state.settings);
   if (!payloadSettings.siteName) {
     setStatus("请填写网站名称。", "error");
-    saveButton.disabled = false;
     if (siteNameInput) siteNameInput.focus();
     return;
   }
@@ -1034,58 +1012,45 @@ async function saveChanges() {
     isSiteStartDateChanged;
 
   if (!hasChanges) {
+    if (pendingSave) {
+      setStatus("上次保存结果尚未确认，当前编辑已保留。请先核对最新数据，再决定是否重新加载。", "error");
+      return;
+    }
     resetDirty();
     setStatus("没有可保存的更改。", "neutral");
     return;
   }
 
+  const changes = {
+    _version: savedSnapshot._version,
+    operations: { apps: appOperations, bookmarks: bookmarkOperations },
+    settings: settingsPatch,
+    ...(isSiteStartDateChanged ? { stats: { siteStartDate: nextSiteStartDate } } : {}),
+  };
+  const fingerprint = JSON.stringify(changes);
+  if (!pendingSave || pendingSave.fingerprint !== fingerprint) {
+    pendingSave = { fingerprint, body: { ...changes, requestId: crypto.randomUUID() } };
+  }
+  if (!beginOperation("saving")) return;
+  setStatus("正在保存修改，完成前暂时锁定编辑...", "neutral");
   try {
-    if (appOperations.length > 0) {
-      await requestAuthJson(PATCH_APPS_ENDPOINT, {
-        method: "PATCH",
-        body: { operations: appOperations },
-      });
-    }
-
-    if (bookmarkOperations.length > 0) {
-      await requestAuthJson(PATCH_BOOKMARKS_ENDPOINT, {
-        method: "PATCH",
-        body: { operations: bookmarkOperations },
-      });
-    }
-
-    if (Object.keys(settingsPatch).length > 0) {
-      await requestAuthJson(PATCH_SETTINGS_ENDPOINT, {
-        method: "PATCH",
-        body: settingsPatch,
-      });
-    }
-
-    if (isSiteStartDateChanged) {
-      await requestAuthJson(DATA_ENDPOINT, {
-        method: "PUT",
-        body: {
-          stats: {
-            siteStartDate: nextSiteStartDate,
-          },
-        },
-      });
-    }
-
-    const restored = await loadData(false);
-    if (!restored) {
-      if (saveButton) saveButton.disabled = false;
-      return;
-    }
-
+    const payload = await requestAuthJson(DATA_ENDPOINT, { method: "PATCH", body: pendingSave.body });
+    updateStateFromResponse(getPayloadData(payload));
+    pendingSave = null;
     setStatus("保存成功！", "success");
   } catch (error) {
     if (error?.isUnauthorized) {
       return;
     }
     console.error("保存失败", error);
-    setStatus(error.message || "保存失败，请稍后再试。", "error");
-    if (saveButton) saveButton.disabled = false;
+    if (error?.status === 409) {
+      pendingSave = null;
+      setStatus("其他页面已更新数据，当前编辑已保留。请先核对最新数据并合并更改；点击“放弃更改”会重新加载并清除本页编辑。", "error");
+    } else {
+      setStatus(`${error.message || "保存失败，请稍后再试。"} 当前编辑已保留，再次保存相同内容会安全确认本次提交。`, "error");
+    }
+  } finally {
+    endOperation();
   }
 }
 
@@ -1095,23 +1060,22 @@ function handleUnauthorized(message) {
 }
 
 async function handleLogout() {
+  if (activeOperation) return;
+  if (isDirty && !window.confirm("退出登录将放弃未保存的修改，确定退出吗？")) return;
+  if (!beginOperation("logout")) return;
   try {
-    await fetch("/api/logout", { method: "POST" });
-  } catch (_error) {
-    // ignore
+    await requestAuthJson("/api/logout", { method: "POST" });
+    resetDirty();
+    pendingSave = null;
+    setStatus("已退出登录，正在返回首页。", "neutral");
+    window.location.replace("/");
+  } catch (error) {
+    if (!error?.isUnauthorized) {
+      setStatus(error.message || "退出登录失败，请重试。", "error");
+    }
+  } finally {
+    endOperation();
   }
-  state.apps = [];
-  state.bookmarks = [];
-  state.settings = normaliseSettingsIncoming(null);
-  applySettingsToInputs(state.settings);
-  render();
-  resetDirty();
-  setPasswordMessage("");
-  setStatus("已退出登录，正在返回首页。", "neutral");
-  if (logoutButton) {
-    logoutButton.disabled = true;
-  }
-  window.location.replace("/");
 }
 
 function setPasswordMessage(message, variant = "neutral") {
@@ -1133,7 +1097,7 @@ function setPasswordMessage(message, variant = "neutral") {
 
 async function handlePasswordSubmit(event) {
   event.preventDefault();
-  if (!passwordForm) return;
+  if (!passwordForm || activeOperation) return;
 
   
 
@@ -1176,6 +1140,7 @@ async function handlePasswordSubmit(event) {
 
   setPasswordMessage("正在更新密码...");
   setStatus("正在更新密码...", "neutral");
+  if (!beginOperation("password")) return;
 
   const submitButton = passwordForm.querySelector('button[type="submit"]');
   const passwordInputs = Array.from(passwordForm.querySelectorAll('input[type="password"]'));
@@ -1205,14 +1170,20 @@ async function handlePasswordSubmit(event) {
       return;
     }
 
-    if (!response.ok) {
+    if (!response.ok || payload?.success !== true) {
       const message = getPayloadMessage(payload, response.statusText);
       throw new Error(message || "密码更新失败");
     }
 
+    const newVersion = getPayloadData(payload)?._version;
+    // A password-only commit advances the data version without changing our draft.
+    // If other commits intervened, keep the old version so saving cannot mask a conflict.
+    if (Number.isSafeInteger(newVersion) && newVersion === savedSnapshot._version + 1) {
+      savedSnapshot._version = newVersion;
+    }
     passwordForm.reset();
-    setPasswordMessage("密码已更新，下次登录请使用新密码。", "success");
-    setStatus("密码已更新，下次登录请使用新密码。", "success");
+    setPasswordMessage("密码已更新，其他设备的登录已失效。", "success");
+    setStatus("密码已更新，其他设备的登录已失效。", "success");
     focusCurrentInput = true;
   } catch (error) {
     console.error("更新密码失败", error);
@@ -1227,12 +1198,22 @@ async function handlePasswordSubmit(event) {
     if (focusCurrentInput && currentPasswordInput) {
       currentPasswordInput.focus();
     }
+    endOperation();
+  }
+}
+
+function cancelLogoRequest() {
+  logoRequestToken += 1;
+  if (logoRequest) logoRequest.abort();
+  logoRequest = null;
+  if (fetchLogoButton) {
+    fetchLogoButton.disabled = Boolean(activeOperation);
+    fetchLogoButton.textContent = fetchLogoButtonLabel;
   }
 }
 
 async function handleFetchLogo() {
-  if (!modalUrlInput || !modalIconInput) return;
-  if (!fetchLogoButton) return;
+  if (!modalUrlInput || !modalIconInput || !fetchLogoButton || !modalContext || activeOperation) return;
 
   const targetUrl = modalUrlInput.value.trim();
   if (!targetUrl) {
@@ -1241,13 +1222,23 @@ async function handleFetchLogo() {
     return;
   }
 
-  const originalButtonText = fetchLogoButton.textContent;
+  cancelLogoRequest();
+  const requestToken = ++logoRequestToken;
+  const editorContext = modalContext;
+  const initialIcon = modalIconInput.value;
+  const controller = new AbortController();
+  logoRequest = controller;
   fetchLogoButton.disabled = true;
   fetchLogoButton.textContent = "获取中...";
   setModalError("");
 
   try {
-    const payload = await requestAuthJson(`/api/fetch-logo?targetUrl=${encodeURIComponent(targetUrl)}`);
+    const payload = await requestAuthJson(`/api/fetch-logo?targetUrl=${encodeURIComponent(targetUrl)}`, {
+      signal: controller.signal,
+      timeoutMs: 35000,
+    });
+    if (requestToken !== logoRequestToken || modalContext !== editorContext ||
+        modalUrlInput.value.trim() !== targetUrl || modalIconInput.value !== initialIcon) return;
 
     if (!payload?.success) {
       throw new Error(getPayloadMessage(payload, "获取 Logo 失败"));
@@ -1255,19 +1246,21 @@ async function handleFetchLogo() {
 
     if (payload.logoUrl) {
       modalIconInput.value = payload.logoUrl;
-      markDirty(); // 标记为有修改
     } else {
       throw new Error("未能找到 Logo");
     }
   } catch (error) {
-    if (error?.isUnauthorized) {
+    if (requestToken !== logoRequestToken || controller.signal.aborted || error?.isUnauthorized) {
       return;
     }
     console.error("获取 Logo 失败:", error);
     setModalError(error.message || "获取 Logo 失败，请稍后重试。");
   } finally {
-    fetchLogoButton.disabled = false;
-    fetchLogoButton.textContent = originalButtonText;
+    if (requestToken === logoRequestToken) {
+      logoRequest = null;
+      fetchLogoButton.disabled = Boolean(activeOperation);
+      fetchLogoButton.textContent = fetchLogoButtonLabel;
+    }
   }
 }
 
@@ -1292,6 +1285,7 @@ function bindEvents() {
   // 🆕 添加透明度滑块事件
   if (siteGlassOpacityInput) {
     siteGlassOpacityInput.addEventListener("input", () => {
+      if (activeOperation) return;
       const value = parseInt(siteGlassOpacityInput.value, 10);
       if (opacityValueDisplay) {
         opacityValueDisplay.textContent = `${value}%`;
@@ -1305,6 +1299,7 @@ function bindEvents() {
   // 🆕 壁纸 URL 输入框事件
   if (siteWallpaperUrlInput) {
     siteWallpaperUrlInput.addEventListener("input", () => {
+      if (activeOperation) return;
       state.settings.wallpaperUrl = siteWallpaperUrlInput.value.trim();
       markDirty();
       setStatus("壁纸 URL 已更新，记得保存。", "neutral");
@@ -1313,6 +1308,7 @@ function bindEvents() {
   // 🆕 添加开关事件监听
   if (siteUseWallpaperInput) {
     siteUseWallpaperInput.addEventListener("change", () => {
+      if (activeOperation) return;
       const isEnabled = siteUseWallpaperInput.checked;
       // 启用/禁用 URL 输入框
       if (siteWallpaperUrlInput) {
@@ -1332,6 +1328,7 @@ function bindEvents() {
 
   if (reloadButton) {
     reloadButton.addEventListener("click", async () => {
+      if (activeOperation) return;
       if (isDirty) {
         const confirmed = window.confirm("确定要放弃未保存的修改吗？");
         if (!confirmed) return;
@@ -1374,6 +1371,8 @@ function bindEvents() {
   if (fetchLogoButton) {
     fetchLogoButton.addEventListener("click", handleFetchLogo);
   }
+  modalUrlInput?.addEventListener("input", cancelLogoRequest);
+  modalIconInput?.addEventListener("input", cancelLogoRequest);
 
   if (modalForm) {
     modalForm.addEventListener("submit", applyModalChanges);
@@ -1433,6 +1432,7 @@ function bindEvents() {
   // 🆕 运行开始日期输入事件
   if (siteStartDateInput) {
     siteStartDateInput.addEventListener("input", () => {
+      if (activeOperation) return;
       state.stats.siteStartDate = siteStartDateInput.value || null;
       markDirty();
       setStatus("网站运行开始日期已更新，记得保存。", "neutral");

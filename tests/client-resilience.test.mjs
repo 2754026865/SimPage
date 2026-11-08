@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { test } from 'node:test';
+import { createItemIcon, createFaviconController } from '../public/scripts/lib/ui.js';
+import { withBrowserGlobals } from './helpers/browser-globals.mjs';
 
 const home = readFileSync(new URL('../public/scripts/pages/home.js', import.meta.url), 'utf8');
-const ui = readFileSync(new URL('../public/scripts/lib/ui.js', import.meta.url), 'utf8');
 const quoteSource = home.slice(home.indexOf('function formatYiyanQuote('), home.indexOf('function normaliseWeatherSetting('));
 
 function quoteHarness(fetchJson, cache = new Map(), extra = {}) {
@@ -87,8 +88,11 @@ function makeElement(tagName) {
 }
 
 test('a failed tile icon falls back to the first character without changing its link', () => {
-  const context = vm.createContext({ document: { createElement: makeElement }, normalizeUrl: url => url });
-  vm.runInContext(ui.replaceAll('export ', '') + home.slice(home.indexOf('function createTile('), home.indexOf('function performLocalSearch(')), context);
+  const document = { createElement: makeElement };
+  const context = vm.createContext({ document, normalizeUrl: url => url,
+    createItemIcon: options => withBrowserGlobals({ document }, () => createItemIcon(options)),
+  });
+  vm.runInContext(home.slice(home.indexOf('function createTile('), home.indexOf('function performLocalSearch(')), context);
   const tile = context.createTile({ name: '导航', url: 'https://example.com/', icon: 'https://example.com/broken.png' });
   const icon = tile.children[0];
   icon.children[0].onerror();
@@ -102,13 +106,12 @@ function faviconHarness() {
   const timers = new Map();
   let nextTimer = 0;
   const link = makeElement('link');
-  const context = vm.createContext({
+  const globals = {
     Image: class { constructor() { images.push(this); } removeAttribute(key) { delete this[key]; } },
     window: { setTimeout(callback) { const id = ++nextTimer; timers.set(id, callback); return id; }, clearTimeout(id) { timers.delete(id); } },
-  });
-  vm.runInContext(ui.replaceAll('export ', ''), context);
-  const controller = context.createFaviconController({ faviconLink: link, defaultHref: '/simpage-logo.svg', defaultType: 'image/svg+xml' });
-  return { images, timers, link, update: controller.updateFavicon };
+  };
+  const controller = createFaviconController({ faviconLink: link, defaultHref: '/simpage-logo.svg', defaultType: 'image/svg+xml' });
+  return { images, timers, link, update: (...args) => withBrowserGlobals(globals, () => controller.updateFavicon(...args)) };
 }
 
 test('failed or timed out custom favicon retains the local icon', () => {
@@ -134,5 +137,30 @@ test('a superseded favicon request cannot replace newer settings', () => {
   h.images[1].onload();
   lateSuccess();
   assert.equal(h.link.href, 'https://example.com/new.ico');
+  assert.equal(h.timers.size, 0);
+});
+
+test('identical favicon settings reuse both pending and completed image requests', () => {
+  const h = faviconHarness();
+  h.update('https://example.com/icon.ico', '导航');
+  h.update('https://example.com/icon.ico', '新名称');
+  assert.equal(h.images.length, 1);
+  h.images[0].onload();
+  h.update('https://example.com/icon.ico', '另一个名称');
+  assert.equal(h.images.length, 1);
+  assert.equal(h.link.href, 'https://example.com/icon.ico');
+});
+
+test('favicon loads safe root-relative images and rejects ambiguous relative network paths', () => {
+  const h = faviconHarness();
+  h.update('/images/local-icon.svg', 'Local');
+  assert.equal(h.images[0].src, '/images/local-icon.svg');
+  h.images[0].onload();
+  assert.equal(h.link.href, '/images/local-icon.svg');
+  const document = { createElement: () => ({ getContext: () => null }) };
+  withBrowserGlobals({ document }, () => {
+    for (const icon of ['//other.example/icon.svg', '/\\other.example/icon.svg', '/bad\npath.svg', '/bad path.svg']) h.update(icon, 'Local');
+  });
+  assert.equal(h.images.length, 1);
   assert.equal(h.timers.size, 0);
 });

@@ -1,3 +1,7 @@
+import { normaliseFooterValue } from "./shared.js";
+import { loadImage } from "./image.js";
+export { normaliseFooterValue };
+
 export function replaceChildrenSafe(target, ...nodes) {
   if (!target) return;
   if (typeof target.replaceChildren === "function") {
@@ -10,14 +14,6 @@ export function replaceChildrenSafe(target, ...nodes) {
       target.appendChild(node);
     }
   });
-}
-
-export function normaliseFooterValue(value) {
-  if (typeof value !== "string") {
-    return "";
-  }
-  const normalised = value.replace(/\r\n?/g, "\n");
-  return normalised.trim() ? normalised : "";
 }
 
 export function setDocumentTitle(siteName, { defaultTitle, suffix = "" } = {}) {
@@ -57,167 +53,127 @@ export function setBackToTopVisibility(button, threshold = 320) {
   }
 }
 
+function isImageAddress(value) {
+  if (/^https?:\/\//i.test(value) || /^data:image\//i.test(value)) return true;
+  return value.startsWith("/") && !value.startsWith("//") && !/[\\\u0000-\u0020\u007f]/.test(value);
+}
+
+export function createItemIcon({ name, icon, className = "", loading = "lazy" } = {}) {
+  const wrapper = document.createElement("span");
+  wrapper.className = className;
+  const value = typeof icon === "string" ? icon.trim() : "";
+  if (isImageAddress(value)) {
+    const image = document.createElement("img");
+    image.alt = `${name || ""} 图标`;
+    image.loading = loading;
+    image.decoding = "async";
+    image.referrerPolicy = "no-referrer";
+    image.onerror = () => {
+      image.onerror = null;
+      wrapper.textContent = deriveFallbackIcon(name);
+    };
+    wrapper.appendChild(image);
+    image.src = value;
+  } else {
+    wrapper.textContent = value ? Array.from(value).slice(0, 2).join("") : deriveFallbackIcon(name);
+  }
+  return wrapper;
+}
+
 export function createFaviconController({
-  faviconLink,
-  defaultHref = "data:,",
-  defaultType = "",
-  defaultSizes = "",
-  defaultSymbol = "🧭",
-  emojiColor = "#111827",
+  faviconLink, defaultHref = "data:,", defaultType = "", defaultSizes = "",
+  defaultSymbol = "🧭", emojiColor = "#111827",
 } = {}) {
   const faviconCache = new Map();
+  const cacheLimit = 16;
   let faviconTaskToken = 0;
-  let cancelFaviconLoad = null;
+  let activeImage = null;
+  let lastIdentity = null;
 
   function applyDefaultFavicon() {
-    if (!faviconLink) return false;
-    if (!defaultHref || defaultHref === "data:,") {
-      return false;
-    }
+    if (!faviconLink || !defaultHref || defaultHref === "data:,") return false;
     faviconLink.href = defaultHref;
-    if (defaultType) {
-      faviconLink.setAttribute("type", defaultType);
-    } else {
-      faviconLink.removeAttribute("type");
-    }
-    if (defaultSizes) {
-      faviconLink.setAttribute("sizes", defaultSizes);
-    } else {
-      faviconLink.removeAttribute("sizes");
-    }
+    if (defaultType) faviconLink.setAttribute("type", defaultType);
+    else faviconLink.removeAttribute("type");
+    if (defaultSizes) faviconLink.setAttribute("sizes", defaultSizes);
+    else faviconLink.removeAttribute("sizes");
     return true;
   }
 
-  function deriveFaviconSymbol(siteName) {
-    if (typeof siteName === "string" && siteName.trim()) {
-      const units = Array.from(siteName.trim());
-      if (units.length > 0) {
-        return units[0];
-      }
-    }
-    return defaultSymbol;
-  }
-
-  function createEmojiFavicon(symbolValue) {
-    const base = typeof symbolValue === "string" ? symbolValue.trim() : "";
-    const units = base ? Array.from(base) : [];
-    const symbol = units.length > 0 ? units[0] : defaultSymbol;
-
+  function createEmojiFavicon(value) {
+    const symbol = Array.from(String(value || "").trim())[0] || defaultSymbol;
     if (faviconCache.has(symbol)) {
-      return faviconCache.get(symbol);
+      const cached = faviconCache.get(symbol);
+      faviconCache.delete(symbol);
+      faviconCache.set(symbol, cached);
+      return cached;
     }
-
     const canvas = document.createElement("canvas");
-    const size = 64;
-    canvas.width = size;
-    canvas.height = size;
+    canvas.width = 64;
+    canvas.height = 64;
     const context = canvas.getContext("2d");
-    if (!context) {
-      return null;
-    }
-
-    context.clearRect(0, 0, size, size);
-    context.fillStyle = "rgba(0, 0, 0, 0)";
-    context.fillRect(0, 0, size, size);
-    context.font = `${Math.round(size * 0.7)}px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif`;
+    if (!context) return null;
+    context.clearRect(0, 0, 64, 64);
+    context.font = '45px "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif';
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.fillStyle = emojiColor;
-    context.fillText(symbol, size / 2, size / 2);
-
+    context.fillText(symbol, 32, 32);
     const dataUrl = canvas.toDataURL("image/png");
     faviconCache.set(symbol, dataUrl);
+    if (faviconCache.size > cacheLimit) faviconCache.delete(faviconCache.keys().next().value);
     return dataUrl;
   }
 
-  function isLogoUrl(value) {
-    return typeof value === "string" && (/^https?:\/\//i.test(value) || value.startsWith("data:"));
+  function applySymbol(symbol) {
+    const dataUrl = createEmojiFavicon(symbol);
+    if (!dataUrl) return false;
+    faviconLink.href = dataUrl;
+    faviconLink.setAttribute("type", "image/png");
+    faviconLink.setAttribute("sizes", "64x64");
+    return true;
   }
 
-  function updateFavicon(rawValue, siteName) {
-    if (!faviconLink) return;
-    const taskToken = ++faviconTaskToken;
-    if (cancelFaviconLoad) {
-      cancelFaviconLoad();
-      cancelFaviconLoad = null;
-    }
-    const cleanValue = typeof rawValue === "string" ? rawValue.trim() : "";
-
-    if (cleanValue) {
-      if (isLogoUrl(cleanValue)) {
-        // Keep a usable local icon until the configured image has loaded successfully.
-        applyDefaultFavicon();
-        const img = new Image();
-        let settled = false;
-        let timeoutId;
-        const cleanup = () => {
-          window.clearTimeout(timeoutId);
-          img.onload = null;
-          img.onerror = null;
-          if (cancelFaviconLoad === cancel) cancelFaviconLoad = null;
-        };
-        const cancel = () => {
-          settled = true;
-          cleanup();
-          img.removeAttribute("src");
-        };
-        const finish = (loaded) => {
-          if (settled) return;
-          settled = true;
-          cleanup();
-          if (!loaded) img.removeAttribute("src");
-          if (taskToken !== faviconTaskToken) return;
-          if (loaded) {
-            faviconLink.href = cleanValue;
-            faviconLink.removeAttribute("type");
-            faviconLink.removeAttribute("sizes");
-          } else {
-            updateFavicon("", siteName);
-          }
-        };
-        cancelFaviconLoad = cancel;
-        img.onload = () => finish(true);
-        img.onerror = () => finish(false);
-        timeoutId = window.setTimeout(() => finish(false), 10000);
-        try {
-          img.src = cleanValue;
-        } catch (_error) {
-          finish(false);
-        }
-        return;
-      }
-
-      const emojiUrl = createEmojiFavicon(cleanValue);
-      if (emojiUrl) {
-        faviconLink.href = emojiUrl;
-        faviconLink.setAttribute("type", "image/png");
-        faviconLink.setAttribute("sizes", "64x64");
-        return;
-      }
-    }
-
-    if (applyDefaultFavicon()) {
-      return;
-    }
-
-    const fallbackUrl = createEmojiFavicon(deriveFaviconSymbol(siteName));
-    if (fallbackUrl) {
-      faviconLink.href = fallbackUrl;
-      faviconLink.setAttribute("type", "image/png");
-      faviconLink.setAttribute("sizes", "64x64");
-      return;
-    }
-
-    if (defaultHref) {
-      faviconLink.href = defaultHref;
-    } else {
-      faviconLink.href = "data:,";
-    }
+  function applyFallback(siteName) {
+    if (applyDefaultFavicon() || applySymbol(siteName || defaultSymbol)) return;
+    faviconLink.href = defaultHref || "data:,";
     faviconLink.removeAttribute("type");
     faviconLink.removeAttribute("sizes");
   }
 
-  return {
-    updateFavicon,
-  };
+  function updateFavicon(rawValue, siteName) {
+    if (!faviconLink) return;
+    const value = typeof rawValue === "string" ? rawValue.trim() : "";
+    const hasDefault = defaultHref && defaultHref !== "data:,";
+    const identity = `${value}|${hasDefault ? "" : siteName || ""}`;
+    if (identity === lastIdentity) return;
+    lastIdentity = identity;
+    const taskToken = ++faviconTaskToken;
+    activeImage?.cancel();
+    activeImage = null;
+    if (isImageAddress(value)) {
+      applyDefaultFavicon();
+      const task = loadImage(value, {
+        timeoutMs: 10000,
+        onLoad() {
+          if (taskToken !== faviconTaskToken) return;
+          activeImage = null;
+          faviconLink.href = value;
+          faviconLink.removeAttribute("type");
+          faviconLink.removeAttribute("sizes");
+        },
+        onError() {
+          if (taskToken !== faviconTaskToken) return;
+          activeImage = null;
+          applyFallback(siteName);
+        },
+      });
+      if (task.pending) activeImage = task;
+      return;
+    }
+    if (value && applySymbol(value)) return;
+    applyFallback(siteName);
+  }
+
+  return { updateFavicon };
 }

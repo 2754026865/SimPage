@@ -6,8 +6,8 @@ compatibility_date = "2024-03-26"
 # Daily wallpaper uses https://api.bimg.cc/today; no API key is required.
 
 # KV Namespace bindings
-# 1. SIMPAGE_DATA: Stores the main application data (settings, apps, bookmarks).
-# 2. SESSIONS: Stores user login session tokens.
+# 1. SIMPAGE_DATA: Read-only source for the one-time AppStateDO migration.
+# 2. SESSIONS: Read-only source for a bounded legacy-session migration window.
 # 3. __STATIC_CONTENT: Stores all static assets (HTML, CSS, JS, images).
 #    This name is required by the @cloudflare/kv-asset-handler library.
 kv_namespaces = [
@@ -19,6 +19,7 @@ kv_namespaces = [
 bindings = [
   { name = "VISITOR_COUNTER", class_name = "VisitorCounterDO" },
   { name = "LOGIN_RATE_LIMIT", class_name = "LoginRateLimitDO" },
+  { name = "APP_STATE", class_name = "AppStateDO" },
 ]
 
 [[migrations]]
@@ -28,6 +29,10 @@ new_sqlite_classes = ["VisitorCounterDO"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["LoginRateLimitDO"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["AppStateDO"]
 
 # Site configuration for static assets
 # This tells Wrangler to upload the contents of the 'public' directory

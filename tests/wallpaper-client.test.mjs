@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 import { test } from 'node:test';
+import { loadImage } from '../public/scripts/lib/image.js';
+import { withBrowserGlobals } from './helpers/browser-globals.mjs';
 
 const source = readFileSync(new URL('../public/scripts/pages/home.js', import.meta.url), 'utf8');
 const scheduling = source.slice(source.indexOf('function removeWallpaper()'), source.indexOf('function updateFooter('));
@@ -31,6 +33,7 @@ function harness() {
     console: { warn(message) { warnings.push(message); }, error() {} },
     scheduleNonCriticalTask(callback) { idle.push(callback); },
   });
+  app.loadImage = (...args) => withBrowserGlobals({ window: app.window, Image: app.Image }, () => loadImage(...args));
   vm.runInContext(`let wallpaperTaskToken = 0; let cancelWallpaperLoad = null;\n${scheduling}\n${loading}`, app);
   return {
     app, images, timers, classes, style, warnings,

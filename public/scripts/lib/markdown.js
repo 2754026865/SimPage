@@ -16,7 +16,7 @@ function sanitiseUrl(value) {
     return "";
   }
   try {
-    const url = new URL(trimmed, window.location.origin);
+    const url = new URL(trimmed, globalThis.location?.origin || "https://localhost");
     if (url.protocol === "http:" || url.protocol === "https:") {
       return url.href;
     }
@@ -26,30 +26,31 @@ function sanitiseUrl(value) {
   return "";
 }
 
+function renderPlainInline(text) {
+  return escapeHtml(text)
+    .replace(/(\*\*|__)([^*_]+?)\1/g, (_, __, content) => `<strong>${content}</strong>`)
+    .replace(/~~([^~]+?)~~/g, (_, content) => `<del>${content}</del>`)
+    .replace(/(\*|_)([^*_]+?)\1/g, (_, __, content) => `<em>${content}</em>`);
+}
+
 function renderInline(text) {
-  let result = escapeHtml(text);
-
-  result = result.replace(/`([^`]+)`/g, (_, code) => `<code>${code}</code>`);
-  result = result.replace(/(\*\*|__)([^*_]+?)\1/g, (_, __, content) => `<strong>${content}</strong>`);
-  result = result.replace(/(~{2})([^~]+?)\1/g, (_, __, content) => `<del>${content}</del>`);
-  result = result.replace(/(\*|_)([^*_]+?)\1/g, (_, __, content) => `<em>${content}</em>`);
-  result = result.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (match, alt, url) => {
-    const safeUrl = sanitiseUrl(url);
-    if (!safeUrl) {
-      return alt;
+  // Recognise code and link destinations before emphasis. Never process generated HTML.
+  const tokens = /`([^`]+)`|(!?)\[([^\]]*)\]\(([^)\n]+)\)/g;
+  let html = "";
+  let offset = 0;
+  for (const match of text.matchAll(tokens)) {
+    html += renderPlainInline(text.slice(offset, match.index));
+    if (match[1] !== undefined) html += `<code>${escapeHtml(match[1])}</code>`;
+    else {
+      const [, , image, label, destination] = match;
+      const url = sanitiseUrl(destination);
+      if (!url) html += escapeHtml(label);
+      else if (image) html += `<img src="${escapeHtml(url)}" alt="${escapeHtml(label)}" loading="lazy" referrerpolicy="no-referrer" />`;
+      else html += `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${renderPlainInline(label)}</a>`;
     }
-    const safeAlt = escapeHtml(alt);
-    return `<img src="${safeUrl}" alt="${safeAlt}" loading="lazy" />`;
-  });
-  result = result.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, label, url) => {
-    const safeUrl = sanitiseUrl(url);
-    if (!safeUrl) {
-      return label;
-    }
-    return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`;
-  });
-
-  return result;
+    offset = match.index + match[0].length;
+  }
+  return html + renderPlainInline(text.slice(offset));
 }
 
 export function renderMarkdown(source) {

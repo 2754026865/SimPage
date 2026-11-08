@@ -4,7 +4,7 @@
 
 # SimPage · 现代化导航页
 
-一个集成时间问候、天气信息、智能搜索，以及应用与书签快捷入口的现代化导航页。当前仓库已精简为 **Cloudflare Workers / Pages** 部署方案，不再包含本地 Node.js 服务端代码。
+一个集成时间问候、天气信息、智能搜索，以及应用与书签快捷入口的现代化导航页。当前仓库使用 **Cloudflare Workers** 部署，包含 Worker API、Durable Objects 和站点静态资源，不提供独立 Pages 或本地 Node.js 服务端入口。
 
 ## 功能特性
 
@@ -14,24 +14,26 @@
 - **应用与书签分区**：卡片式网格布局，应用/书签标签切换，书签支持子分类提示。
 - **主题与视觉**：明暗主题跟随系统并可手动覆盖；毛玻璃透明度可调；支持背景壁纸开关与自定义 URL。
 - **后台管理**：`/login` 登录页、`/admin` 管理页；支持密码修改、数据保存、退出登录。
-- **数据持久化**：业务数据写入 Cloudflare KV，静态资源由 Workers 站点资源托管。
+- **数据持久化**：业务数据与登录会话由 Durable Object 统一管理，保存支持版本冲突检查和重复请求去重；静态资源由 Workers 站点资源托管。
 
 ## 运行架构
 
 - `worker.js`：Cloudflare Worker 入口，负责 API、鉴权、静态资源分发。
 - `public/`：站点静态资源目录，会通过 Wrangler 上传到 `__STATIC_CONTENT`。
-- `SIMPAGE_DATA`：存储站点配置、应用、书签等业务数据。
-- `SESSIONS`：存储后台登录会话。
+- `APP_STATE`：`AppStateDO`，保存站点配置、应用、书签和会话，是数据的权威来源。
+- `SIMPAGE_DATA`：旧版数据的只读迁移来源，升级不会覆盖或删除原数据。
+- `SESSIONS`：旧版会话的只读迁移来源，仅在迁移窗口内兼容。
 - `VISITOR_COUNTER`：Durable Object，用于维护访问计数。
+- `LOGIN_RATE_LIMIT`：按 IP 分片的 Durable Object，验证密码前预占额度并自动清理过期记录。
 
 ## 快速开始
 
 ### 1. 安装依赖
 
-需要 Node.js 与 npm，仅用于运行 Wrangler CLI 和部署 Worker。
+需要 Node.js 22 或更高版本与 npm，用于运行开发工具、测试和部署 Worker。使用锁文件安装已验证的依赖版本。
 
 ```bash
-npm install
+npm ci
 ```
 
 ### 2. 登录 Cloudflare
@@ -43,8 +45,8 @@ npx wrangler login
 ### 3. 创建 KV 命名空间
 
 ```bash
-npx wrangler kv:namespace create "SIMPAGE_DATA"
-npx wrangler kv:namespace create "SESSIONS"
+npx wrangler kv namespace create "SIMPAGE_DATA"
+npx wrangler kv namespace create "SESSIONS"
 ```
 
 将生成的 `id` / `preview_id` 更新到 `wrangler.toml` 的 `kv_namespaces` 配置中。
@@ -77,6 +79,7 @@ npm run deploy
 
 ```bash
 git pull
+npm ci
 npm run deploy
 ```
 
@@ -89,6 +92,14 @@ npm run deploy
 成功图片在边缘缓存中保留最多一天，30 分钟内直接复用；过期刷新失败时可以继续使用一天以内的成功图片，不使用 KV 存储壁纸。边缘缓存可能提前被驱逐，因此前台另外内置本地备用背景，默认请求失败最多重试一次。已有的自定义壁纸继续生效，旧默认地址 `https://bing.img.run/uhd.php` 会自动改走本站接口。
 
 后台保存密码时会记录哈希算法；无算法标识的旧密码记录会兼容验证，在成功登录后自动迁移。无需重置已有密码或清空站点数据。
+
+### 旧版本数据升级
+
+`wrangler.toml` 保留已有 `v1`、`v2` 迁移，并新增 `v3` 的 `AppStateDO` 和 `APP_STATE` 绑定。更新时需要同时部署代码和这份配置。首次访问会读取旧 `SIMPAGE_DATA` 的 `data`，原样保留已有配置、条目和密码，再写入新的 Durable Object；后续保存和会话管理只写 Durable Object。旧 KV 会保留作迁移源，但不再持续同步新修改，因此迁移后不能简单切回旧 Worker 继续编辑。
+
+旧会话最多兼容到迁移后的 12 小时窗口结束；退出会立即撤销，改密会关闭旧会话迁入并使其他设备的会话失效，为当前设备重发会话。旧密码算法、旧默认壁纸地址和 `weatherLocation` 仍兼容。登录和改密共用每 IP 5 分钟 5 次验证额度，成功尝试也计入；过期记录自动删除。
+
+新保存限制为整份站点数据 512 KiB、应用和书签各最多 1000 项、天气最多 8 个城市，超出会报错而不会截断数据。旧 KV 超过 1.5 MiB 或无法解析时会停止迁移并保留原数据，需要先导出并精简再重试。会话最多保留 256 条并定期清理；最近 128 次保存请求保留去重回执。具体变更与验证见 `docs/maintenance-2026-11-08.md`。
 
 ### Cloudflare 与资源加载
 
@@ -103,14 +114,14 @@ npm test
 npm run test:worker
 ```
 
-单元测试覆盖密码兼容及迁移、壁纸代理/缓存/重试、CSP、图标和一言降级。`test:worker` 先执行构建预检（不上传），再用本地 workerd 检查真实密码校验、HTML nonce 改写及 Cache API；上游请求为本地模拟，不读取线上 KV。真实 Cloudflare 安全规则及第三方服务可用性仍需部署后核查。
+单元测试覆盖原子保存、并发冲突、幂等重试、会话撤销、限流、输入边界、缓存、前端编辑状态和真实模块启动，以及壁纸、CSP、图标、一言降级。`test:worker` 先执行构建预检（不上传），再用本地 workerd 检查 SQLite Durable Objects、真实密码校验、旧 KV 迁移、HTML nonce 改写及 Cache API；Worker 上游请求为本地模拟，不读取线上 KV。真实 Cloudflare 安全规则及第三方服务可用性仍需部署后核查。
 
 > 安全说明：`wrangler.toml` 中的 KV `id` 与 Durable Object 绑定信息**不是机密**，可以随仓库公开提交。真正的机密是你的 Cloudflare 账户 API Token / `ADMIN_PASSWORD`：前者请通过 CI 的 secrets 注入，后者通过 `wrangler secret put` 写入，**永远不要写入仓库**。
 
 ## 数据管理
 
-- `SIMPAGE_DATA`：站点设置、应用、书签等核心业务数据。
-- `SESSIONS`：后台登录会话。
+- `APP_STATE`：站点设置、应用、书签、会话和保存回执。
+- `SIMPAGE_DATA` / `SESSIONS`：保留的旧数据及旧会话迁移来源。
 - `__STATIC_CONTENT`：Wrangler 自动上传的静态资源。
 - `VISITOR_COUNTER`：访问量计数 Durable Object。
 
@@ -125,26 +136,32 @@ npm run test:worker
 │   ├── icons/
 │   │   └── sprite.svg               # 集中式 SVG sprite（主题切换、搜索引擎图标）
 │   ├── styles/
-│   │   ├── main.css                 # 主样式（三个页面共用)
+│   │   ├── main.css                 # 公共主题、布局、表单和无障碍样式
+│   │   ├── home.css                 # 首页专属样式
+│   │   ├── admin.css                # 后台专属样式
 │   │   └── login.css                # 登录页专属样式
-│   ├── scripts/
-│   │   ├── pages/                   # 页面入口脚本（与 HTML 一一对应)
-│   │   │   ├── home.js              # 前台导航页
-│   │   │   ├── admin.js             # 后台管理页
-│   │   │   └── login.js             # 登录页
-│   │   ├── lib/                     # 纯工具库（无副作用，仅 export）
-│   │   │   ├── api.js               # fetch / payload 解析
-│   │   │   ├── data.js              # 应用、书签、天气数据规范化
-│   │   │   ├── ui.js                # DOM / favicon / 滚动等通用 UI 工具
-│   │   │   ├── lunar.js             # 农历计算
-│   │   │   └── markdown.js          # 轻量 Markdown 渲染
-│   │   └── features/                # 跨页面功能模块（自执行 / 有副作用）
-│   │       ├── theme.js             # 明暗主题切换
-│   │       └── font-loader.js       # 字体异步加载
-│   └── data/
-│       ├── china-cities.json        # 中国城市基础数据
-│       └── weather-cities.json      # 天气可选城市数据
+│   ├── images/
+│   │   └── wallpaper-fallback.svg   # 壁纸加载失败时的本地备用背景
+│   └── scripts/
+│       ├── pages/                   # 页面入口脚本（与 HTML 一一对应）
+│       │   ├── home.js              # 前台导航页
+│       │   ├── admin.js             # 后台管理页
+│       │   └── login.js             # 登录页
+│       ├── lib/                     # 显式调用的可复用工具（包含 DOM 工具）
+│       │   ├── api.js               # fetch / payload 解析
+│       │   ├── data.js              # 应用、书签、天气数据规范化
+│       │   ├── shared.js            # 浏览器与 Worker 共用的纯数据规则
+│       │   ├── date.js              # 日历缓存与周数
+│       │   ├── image.js             # 有超时与取消的图片加载
+│       │   ├── ui.js                # DOM / favicon / 滚动等通用 UI 工具
+│       │   ├── lunar.js             # 农历计算
+│       │   └── markdown.js          # 轻量 Markdown 渲染
+│       └── features/                # 跨页面功能模块（自执行 / 有副作用）
+│           ├── theme.js             # 明暗主题切换
+│           └── font-loader.js       # 字体异步加载
 ├── worker.js                        # Cloudflare Worker 入口
+├── server/                          # 状态事务、输入边界和上游代理模块
+├── tests/                           # 单元/路由回归与本地 workerd 验证
 ├── wrangler.toml                    # Wrangler 配置（含 KV / Durable Object 绑定）
 ├── package.json
 ├── package-lock.json
@@ -154,11 +171,12 @@ npm run test:worker
 ### 前端代码组织约定
 
 - **`pages/`**：每个页面唯一的入口脚本，HTML 中通过 `<script type="module" src="/scripts/pages/xxx.js">` 引入。
-- **`lib/`**：只 `export` 函数，不直接操作全局 DOM，可被任意页面/模块复用。
+- **`lib/`**：提供显式调用的可复用函数；数据规范化、Markdown 等逻辑与 DOM 操作分开组织，`ui.js` 中的 favicon 和滚动工具会在调用时操作 DOM。
 - **`features/`**：自执行的功能模块（如主题切换、字体加载），通过 `import "../features/xxx.js"` 在需要的页面里激活。
-- **`styles/`**：所有 CSS 集中存放，按"主样式 + 页面专属样式"组织。
+- **`styles/`**：三个页面共用 `main.css`，分别按需加载 `home.css`、`admin.css`、`login.css`。新增页面规则应放入对应文件，通用规则保留在 `main.css`，避免登录页加载整套首页和后台样式。
 
 ## 说明
 
 - 仓库已经移除本地 Node.js 服务端、Docker 部署和本地文件数据存储逻辑。
-- 如果您之前使用过旧版本的本地文件存储，需要自行迁移数据到 Cloudflare KV。
+- 如果您之前使用过旧版本的本地文件存储，需要在首次启动新版本前整理为旧 KV 数据格式，或在后台重新录入；旧 KV 版本按上述流程自动迁移。
+- 本轮样式清理、页面按需加载和文件体积记录见 [2026-11-08 项目整理说明](docs/maintenance-2026-11-08.md)。

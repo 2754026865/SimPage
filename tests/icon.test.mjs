@@ -1,30 +1,17 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { createUpstreamServices } from '../server/upstream.mjs';
 import { test } from 'node:test';
 
 // SimPage delegates image discovery to IconLink. Test that integration here;
 // the standalone image-discovery worker is not part of this repository.
-const source = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
-const constants = source.slice(source.indexOf('const ICON_LINK_API_URL'), source.indexOf('// =================================================================================', source.indexOf('const ICON_LINK_API_URL')));
-const handler = source.slice(source.indexOf('async function handleFetchLogo('), source.indexOf('async function handleLogout('));
-const helpers = source.slice(source.indexOf('function jsonResponse('), source.indexOf('function isProduction('));
-
 function load(fetch) {
   const timers = new Map();
   let nextTimerId = 0;
-  const context = vm.createContext({
-    URL, Request, Response, Headers, AbortController, fetch,
-    setTimeout(callback, delay) {
-      const id = ++nextTimerId;
-      timers.set(id, { callback, delay });
-      return id;
-    },
-    clearTimeout(id) { timers.delete(id); },
-    console: { error() {} },
+  const app = createUpstreamServices({ fetch, getCache: () => null,
+    setTimeout(callback, delay) { const id = ++nextTimerId; timers.set(id, { callback, delay }); return id; },
+    clearTimeout(id) { timers.delete(id); }, logger: { error() {}, warn() {} },
   });
-  vm.runInContext(constants + handler + helpers, context);
-  return { app: context, timers };
+  return { app, timers };
 }
 
 function request(targetUrl) {
@@ -69,9 +56,9 @@ test('sends normalized site URLs to the fixed IconLink endpoint and returns only
     assert.deepEqual(await response.json(), { success: true, logoUrl: 'https://iconcc.439933.xyz/i/test-logo' });
   }
   assert.deepEqual(seen, [
-    { url: 'https://example.com/page?q=hello' },
-    { url: 'http://example.com/path' },
-    { url: new URL('https://example.com/图标?q=标签').href },
+    { url: 'https://example.com' },
+    { url: 'http://example.com' },
+    { url: 'https://example.com' },
   ]);
   assert.equal(timers.size, 0);
 });
@@ -144,16 +131,12 @@ test('the deadline remains active while reading a stalled upstream response body
   const readingBody = new Promise((resolve) => { bodyStarted = resolve; });
   const { app, timers } = load(async (_url, init) => {
     upstreamSignal = init.signal;
-    return {
-      ok: true,
-      status: 200,
-      json() {
+    return new Response(new ReadableStream({
+      start(controller) {
         bodyStarted();
-        return new Promise((_resolve, reject) => {
-          init.signal.addEventListener('abort', () => reject(Object.assign(new Error('body deadline'), { name: 'AbortError' })), { once: true });
-        });
+        init.signal.addEventListener('abort', () => controller.error(init.signal.reason), { once: true });
       },
-    };
+    }), { headers: { 'Content-Type': 'application/json' } });
   });
   const pending = app.handleFetchLogo(request('https://example.com'));
   await readingBody;

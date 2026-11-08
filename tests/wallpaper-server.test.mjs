@@ -1,25 +1,15 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import vm from 'node:vm';
+import { createUpstreamServices } from '../server/upstream.mjs';
+import { normaliseVisualSettings } from '../public/scripts/lib/shared.js';
 import { test } from 'node:test';
 
-const source = readFileSync(new URL('../worker.js', import.meta.url), 'utf8');
 const now = 1_800_000_000_000;
 const imageBytes = Uint8Array.from([255, 216, 255, 224, 1, 2, 3, 4]);
 const request = () => new Request('https://example.com/api/wallpaper');
 const imageResponse = (headers = {}) => new Response(imageBytes, { headers: { 'Content-Type': 'image/jpeg', ...headers } });
 
 function load(fetch, extra = {}) {
-  const context = vm.createContext({
-    fetch, URL, Request, Response, Headers, AbortController, Uint8Array, setTimeout, clearTimeout,
-    Date: class extends Date { static now() { return now; } },
-    console: { warn() {}, error() {} }, ...extra,
-  });
-  const defaults = source.slice(source.indexOf('const BASE_DEFAULT_SETTINGS'), source.indexOf('const DEFAULT_STATS'));
-  const handler = source.slice(source.indexOf('const WALLPAPER_UPSTREAM_URL'), source.indexOf('async function handleFetchLogo('));
-  const settings = source.slice(source.indexOf('function normaliseVisualSettings('), source.indexOf('function toSafeNonNegativeInteger('));
-  vm.runInContext(defaults + handler + settings, context);
-  return context;
+  return { ...createUpstreamServices({ fetch, now: () => now, getCache: () => extra.caches?.default, logger: { warn() {}, error() {} } }), normaliseVisualSettings };
 }
 
 test('daily wallpaper follows the bimg redirect without a key and returns only image headers', async () => {
