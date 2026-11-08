@@ -66,6 +66,8 @@ export function createFaviconController({
   emojiColor = "#111827",
 } = {}) {
   const faviconCache = new Map();
+  let faviconTaskToken = 0;
+  let cancelFaviconLoad = null;
 
   function applyDefaultFavicon() {
     if (!faviconLink) return false;
@@ -134,13 +136,54 @@ export function createFaviconController({
 
   function updateFavicon(rawValue, siteName) {
     if (!faviconLink) return;
+    const taskToken = ++faviconTaskToken;
+    if (cancelFaviconLoad) {
+      cancelFaviconLoad();
+      cancelFaviconLoad = null;
+    }
     const cleanValue = typeof rawValue === "string" ? rawValue.trim() : "";
 
     if (cleanValue) {
       if (isLogoUrl(cleanValue)) {
-        faviconLink.href = cleanValue;
-        faviconLink.removeAttribute("type");
-        faviconLink.removeAttribute("sizes");
+        // Keep a usable local icon until the configured image has loaded successfully.
+        applyDefaultFavicon();
+        const img = new Image();
+        let settled = false;
+        let timeoutId;
+        const cleanup = () => {
+          window.clearTimeout(timeoutId);
+          img.onload = null;
+          img.onerror = null;
+          if (cancelFaviconLoad === cancel) cancelFaviconLoad = null;
+        };
+        const cancel = () => {
+          settled = true;
+          cleanup();
+          img.removeAttribute("src");
+        };
+        const finish = (loaded) => {
+          if (settled) return;
+          settled = true;
+          cleanup();
+          if (!loaded) img.removeAttribute("src");
+          if (taskToken !== faviconTaskToken) return;
+          if (loaded) {
+            faviconLink.href = cleanValue;
+            faviconLink.removeAttribute("type");
+            faviconLink.removeAttribute("sizes");
+          } else {
+            updateFavicon("", siteName);
+          }
+        };
+        cancelFaviconLoad = cancel;
+        img.onload = () => finish(true);
+        img.onerror = () => finish(false);
+        timeoutId = window.setTimeout(() => finish(false), 10000);
+        try {
+          img.src = cleanValue;
+        } catch (_error) {
+          finish(false);
+        }
         return;
       }
 

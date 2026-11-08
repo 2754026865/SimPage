@@ -103,52 +103,82 @@ router.all("*", () => new Response("Not Found", { status: 404 }));
 
 const SECURITY_CSP = [
   "default-src 'self'",
-  "script-src 'self'",
+  "script-src 'self' https://static.cloudflareinsights.com",
   "style-src 'self' 'unsafe-inline' https://fonts.font.im",
   "img-src 'self' data: https:",
   "font-src 'self' https://fonts.font.im data:",
-  "connect-src 'self' https://v1.hitokoto.cn https://geocoding-api.open-meteo.com https://api.open-meteo.com",
+  "connect-src 'self' https://v1.hitokoto.cn https://geocoding-api.open-meteo.com https://api.open-meteo.com https://cloudflareinsights.com",
+  "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
 ].join("; ");
 
-function applySecurityHeaders(response) {
+function applySecurityHeaders(response, request) {
   if (!response) return response;
   // 重定向(3xx)与 304 不附加 CSP,避免破坏头部不可变性
   const status = response.status;
   if (status >= 300 && status < 400) {
     return response;
   }
-  try {
-    const headers = new Headers(response.headers);
-    if (!headers.has("X-Content-Type-Options")) {
-      headers.set("X-Content-Type-Options", "nosniff");
-    }
-    if (!headers.has("Referrer-Policy")) {
-      headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-    }
-    if (!headers.has("Permissions-Policy")) {
-      headers.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
-    }
-    if (!headers.has("Content-Security-Policy")) {
-      headers.set("Content-Security-Policy", SECURITY_CSP);
-    }
-    return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
-    });
-  } catch (_error) {
-    return response;
+  const headers = new Headers(response.headers);
+  if (!headers.has("X-Content-Type-Options")) {
+    headers.set("X-Content-Type-Options", "nosniff");
   }
+  if (!headers.has("Referrer-Policy")) {
+    headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+  }
+  if (!headers.has("Permissions-Policy")) {
+    headers.set("Permissions-Policy", "geolocation=(), microphone=(), camera=()");
+  }
+  const isHtml = /^text\/html(?:;|$)/i.test(headers.get("Content-Type") || "");
+  let nonce = "";
+  if (!headers.has("Content-Security-Policy")) {
+    if (isHtml) {
+      nonce = Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    headers.set("Content-Security-Policy", nonce
+      ? SECURITY_CSP.replace("script-src 'self'", `script-src 'self' 'nonce-${nonce}'`)
+      : SECURITY_CSP);
+  }
+  if (isHtml) {
+    // Cache the raw KV asset, never the HTML carrying a per-response nonce.
+    headers.set("Cache-Control", "no-store, must-revalidate");
+    headers.set("CDN-Cache-Control", "no-store");
+    headers.set("Cloudflare-CDN-Cache-Control", "no-store");
+    headers.delete("ETag");
+    headers.delete("Last-Modified");
+    headers.delete("Content-Length");
+  }
+  const secured = new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+  if (!nonce) return secured;
+
+  const origin = new URL(request.url).origin;
+  // Cloudflare reads the nonce from the response CSP for its injected scripts.
+  // Only mark our existing same-origin scripts, not arbitrary inline/external code.
+  return new HTMLRewriter().on("script[src]", {
+    element(element) {
+      try {
+        const scriptUrl = new URL(element.getAttribute("src"), request.url);
+        if ((scriptUrl.protocol === "https:" || scriptUrl.protocol === "http:") && scriptUrl.origin === origin) {
+          element.setAttribute("nonce", nonce);
+        }
+      } catch (_error) {
+        // Invalid script URLs remain subject to the regular CSP restrictions.
+      }
+    },
+  }).transform(secured);
 }
 
 export default {
   async fetch(request, env, ctx) {
     try {
       const response = await router.handle(request, env, ctx);
-      return applySecurityHeaders(response);
+      return applySecurityHeaders(response, request);
     } catch (error) {
       console.error("Unhandled error:", error);
       const errorResponse = buildErrorResponse(error, env);
@@ -156,7 +186,8 @@ export default {
         new Response(JSON.stringify(errorResponse, null, 2), {
           status: 500,
           headers: { "Content-Type": "application/json;charset=UTF-8" },
-        })
+        }),
+        request
       );
     }
   },
@@ -259,6 +290,18 @@ async function serveStatic(request, env, ctx, forcePath) {
   if (forcePath) {
     url.pathname = forcePath;
     request = new Request(url.toString(), request);
+  }
+
+  // A 304/206 would reuse an old HTML body with a different response nonce.
+  // Request the complete raw asset while retaining the KV asset cache itself.
+  const lastSegment = url.pathname.split("/").pop() || "";
+  const isHtmlRequest = !lastSegment.includes(".") || /\.html?$/i.test(lastSegment);
+  if (isHtmlRequest) {
+    const headers = new Headers(request.headers);
+    for (const name of ["If-None-Match", "If-Modified-Since", "Range", "If-Range"]) {
+      headers.delete(name);
+    }
+    request = new Request(request, { headers });
   }
 
   try {
@@ -399,12 +442,21 @@ async function handleLogin(request, env, ctx) {
   if (admin.passwordHashAlgo !== PBKDF2_ALGO_CURRENT) {
     const upgradeTask = (async () => {
       try {
-        await commitFullData(env, async (current) => {
-          const next = await createAdminCredentialsFromPassword(password);
+        const next = await createAdminCredentialsFromPassword(password);
+        await commitFullData(env, (current) => {
+          // Only upgrade the credentials that this request actually verified.
+          // A password change while hashing must not be overwritten by this login.
+          if (current.admin?.passwordHash !== admin.passwordHash ||
+              current.admin?.passwordSalt !== admin.passwordSalt ||
+              current.admin?.passwordHashAlgo !== admin.passwordHashAlgo) {
+            throw Object.assign(new Error("Credentials changed during hash upgrade"), { credentialsChanged: true });
+          }
           return { ...current, admin: next };
         });
       } catch (error) {
-        console.error("Auto-upgrade password hash failed:", error);
+        if (!error?.credentialsChanged) {
+          console.error("Auto-upgrade password hash failed:", error);
+        }
       }
     })();
     if (ctx && typeof ctx.waitUntil === "function") {
@@ -760,43 +812,66 @@ function parseDateAsLocalDay(value) {
 }
 
 
-// UAPI_KEY is an optional Cloudflare secret. Only the Worker sends it upstream.
-async function handleGetWallpaper(request, env) {
+const WALLPAPER_UPSTREAM_URL = "https://api.bimg.cc/today";
+const WALLPAPER_FRESH_SECONDS = 30 * 60;
+const WALLPAPER_RETAIN_SECONDS = 24 * 60 * 60;
+const WALLPAPER_MAX_BYTES = 8 * 1024 * 1024;
+
+async function handleGetWallpaper(request, env, ctx) {
+  const cache = typeof caches !== "undefined" ? caches.default : null;
+  // Ignore incoming query strings and keep the previous provider's cache separate.
+  const cacheKey = new Request(new URL("/__cache/wallpaper/bimg-v1", request.url));
+  let cached = null;
+  let cachedAge = Infinity;
+  try {
+    cached = cache ? await cache.match(cacheKey) : null;
+    const storedAt = Number(cached?.headers.get("X-Wallpaper-Cached-At"));
+    cachedAge = storedAt > 0 ? (Date.now() - storedAt) / 1000 : Infinity;
+    if (cachedAge < 0 || cachedAge >= WALLPAPER_RETAIN_SECONDS) {
+      cached = null;
+    }
+  } catch (_error) {
+    // A cache failure must not prevent a direct image request.
+  }
+  if (cached && cachedAge < WALLPAPER_FRESH_SECONDS) {
+    return wallpaperClientResponse(cached, "hit", Math.max(1, Math.floor(WALLPAPER_FRESH_SECONDS - cachedAge)));
+  }
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
-    const apiKey = typeof env?.UAPI_KEY === "string" ? env.UAPI_KEY.trim() : "";
-    const response = await fetch("https://uapis.cn/api/v1/image/bing-daily?resolution=4k", {
-      headers: {
-        Accept: "image/webp,image/*;q=0.9",
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      redirect: "manual",
-      signal: controller.signal,
-    });
+    const response = await fetchWallpaperImage(controller.signal);
     if (!response.ok) {
       await response.body?.cancel();
-      throw new Error(`UAPI wallpaper returned HTTP ${response.status}`);
+      throw new Error("Wallpaper upstream returned an error");
     }
     const contentType = (response.headers.get("Content-Type") || "").split(";", 1)[0].trim().toLowerCase();
     if (!["image/webp", "image/jpeg", "image/png", "image/avif"].includes(contentType)) {
       await response.body?.cancel();
-      throw new Error("UAPI wallpaper did not return an image");
+      throw new Error("Wallpaper upstream did not return an image");
     }
-    const image = await response.arrayBuffer();
-    if (!image.byteLength) throw new Error("UAPI wallpaper returned an empty image");
-    return new Response(image, {
+    const image = await readWallpaperImage(response);
+    const stored = new Response(image, {
       status: 200,
       headers: {
         "Content-Type": contentType,
         "Content-Length": String(image.byteLength),
-        "Cache-Control": "public, max-age=1800",
+        // Keep one successful image for a day; freshness is checked explicitly above.
+        "Cache-Control": `public, max-age=${WALLPAPER_RETAIN_SECONDS}`,
+        "X-Wallpaper-Cached-At": String(Date.now()),
         "Referrer-Policy": "no-referrer",
       },
     });
+    if (cache) {
+      const cacheCopy = stored.clone();
+      const save = Promise.resolve().then(() => cache.put(cacheKey, cacheCopy)).catch(() => {});
+      if (ctx?.waitUntil) ctx.waitUntil(save);
+      else await save;
+    }
+    return wallpaperClientResponse(stored, "fresh", WALLPAPER_FRESH_SECONDS);
   } catch (error) {
-    // Do not log upstream bodies or request headers, which may contain the key.
-    console.error("获取 UAPI 每日壁纸失败:", error?.name === "AbortError" ? "timeout" : "upstream error");
+    if (cached) return wallpaperClientResponse(cached, "stale", 60);
+    console.warn("每日壁纸暂时不可用:", error?.name === "AbortError" ? "上游请求超时" : "上游图片加载失败");
     return new Response(JSON.stringify({ ok: false, error: "每日壁纸暂时不可用" }), {
       status: error?.name === "AbortError" ? 504 : 502,
       headers: { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" },
@@ -804,6 +879,69 @@ async function handleGetWallpaper(request, env) {
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function wallpaperClientResponse(response, state, maxAge) {
+  const headers = new Headers(response.headers);
+  headers.delete("X-Wallpaper-Cached-At");
+  headers.set("Cache-Control", `public, max-age=${maxAge}`);
+  headers.set("X-Wallpaper-Cache", state);
+  return new Response(response.body, { status: 200, headers });
+}
+
+async function fetchWallpaperImage(signal) {
+  let url = new URL(WALLPAPER_UPSTREAM_URL);
+  for (let redirects = 0; redirects <= 3; redirects++) {
+    // The daily endpoint redirects to Bing. Never follow a redirect to an arbitrary host.
+    if (url.protocol !== "https:" || url.username || url.password || url.port ||
+        !(url.hostname === "api.bimg.cc" || url.hostname === "bing.com" || url.hostname.endsWith(".bing.com"))) {
+      throw new Error("Unsupported wallpaper redirect");
+    }
+    const response = await fetch(url.href, {
+      headers: { Accept: "image/webp,image/*;q=0.9" },
+      redirect: "manual",
+      signal,
+    });
+    if (![301, 302, 303, 307, 308].includes(response.status)) return response;
+    const location = response.headers.get("Location");
+    await response.body?.cancel();
+    if (!location) throw new Error("Missing wallpaper redirect location");
+    url = new URL(location, url);
+  }
+  throw new Error("Too many wallpaper redirects");
+}
+
+async function readWallpaperImage(response) {
+  if (Number(response.headers.get("Content-Length")) > WALLPAPER_MAX_BYTES) {
+    await response.body?.cancel();
+    throw new Error("Wallpaper image is too large");
+  }
+  if (!response.body) throw new Error("Empty wallpaper image");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > WALLPAPER_MAX_BYTES) {
+        await reader.cancel();
+        throw new Error("Wallpaper image is too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (!size) throw new Error("Empty wallpaper image");
+  const image = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    image.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return image;
 }
 
 async function handleFetchLogo(request, env) {
@@ -835,6 +973,7 @@ async function handleFetchLogo(request, env) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), ICON_LINK_API_TIMEOUT_MS);
     let response;
+    let payload;
     try {
       response = await fetch(ICON_LINK_API_URL, {
         method: "POST",
@@ -846,11 +985,14 @@ async function handleFetchLogo(request, env) {
         body: JSON.stringify({ url: siteUrl.toString() }),
         signal: controller.signal,
       });
+      payload = await response.json().catch((error) => {
+        if (error?.name === "AbortError") throw error;
+        return null;
+      });
     } finally {
       clearTimeout(timeoutId);
     }
 
-    const payload = await response.json().catch(() => null);
     if (!response.ok || !payload?.ok) {
       const message =
         typeof payload?.error === "string" && payload.error.trim()
@@ -1269,8 +1411,7 @@ function resolveBootstrapPassword(env) {
 }
 
 async function createAdminCredentialsFromPassword(password) {
-  const { passwordHash, passwordSalt } = await hashPassword(password);
-  return { passwordHash, passwordSalt };
+  return hashPassword(password);
 }
 
 async function resolveInitialAdmin(env) {
@@ -1320,8 +1461,7 @@ async function deriveHashHex(password, saltBuffer, iterations) {
 function resolveIterationsForAlgo(algo) {
   if (algo === PBKDF2_ALGO_CURRENT) return PBKDF2_ITERATIONS_CURRENT;
   if (algo === PBKDF2_ALGO_LEGACY) return PBKDF2_ITERATIONS_LEGACY;
-  // 旧数据没有 algo 字段时按遗留 100k 处理
-  return PBKDF2_ITERATIONS_LEGACY;
+  return null;
 }
 
 async function hashPassword(password) {
@@ -1337,10 +1477,22 @@ async function hashPassword(password) {
 }
 
 async function verifyPassword(password, saltHex, expectedHashHex, algo) {
-  const salt = hexToBuffer(saltHex);
+  const isUnmarked = algo == null || algo === "";
   const iterations = resolveIterationsForAlgo(algo);
-  const actualHashHex = await deriveHashHex(password, salt, iterations);
-  return timingSafeEqual(expectedHashHex, actualHashHex);
+  // Unknown explicit algorithms must not silently fall back to a legacy hash.
+  if (!iterations && !isUnmarked) return false;
+  if (typeof saltHex !== "string" || typeof expectedHashHex !== "string" ||
+      !/^(?:[0-9a-f]{2})+$/i.test(saltHex) || !/^[0-9a-f]{128}$/i.test(expectedHashHex)) {
+    return false;
+  }
+  const salt = hexToBuffer(saltHex);
+  const actualHashHex = await deriveHashHex(password, salt, iterations || PBKDF2_ITERATIONS_LEGACY);
+  if (timingSafeEqual(expectedHashHex, actualHashHex)) return true;
+  if (!isUnmarked) return false;
+  // Older records used 100k; a previous bug also saved 600k hashes without a marker.
+  // A successful login upgrades either unmarked format with an explicit algorithm.
+  const currentHashHex = await deriveHashHex(password, salt, PBKDF2_ITERATIONS_CURRENT);
+  return timingSafeEqual(expectedHashHex, currentHashHex);
 }
 
 

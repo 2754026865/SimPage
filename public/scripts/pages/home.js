@@ -119,6 +119,7 @@ let weatherRotationRaws = [];
 let weatherRotationIndex = 0;
 let currentWeatherRaw = null;
 let wallpaperTaskToken = 0;
+let cancelWallpaperLoad = null;
 let localSearchDebounceId = null;
 
 const timeFormatter = new Intl.DateTimeFormat("zh-CN", {
@@ -596,11 +597,21 @@ function removeWallpaper() {
 
 function scheduleWallpaperUpdate(isEnabled, wallpaperUrl) {
   const taskToken = ++wallpaperTaskToken;
+  if (cancelWallpaperLoad) {
+    cancelWallpaperLoad();
+    cancelWallpaperLoad = null;
+  }
   scheduleNonCriticalTask(() => {
     if (taskToken !== wallpaperTaskToken) {
       return;
     }
     if (isEnabled) {
+      // Keep an already displayed image while refreshing; first loads get a local background.
+      if (wallpaperContainer && !wallpaperContainer.style.backgroundImage) {
+        wallpaperContainer.style.backgroundImage = 'url("/images/wallpaper-fallback.svg")';
+        wallpaperContainer.style.removeProperty("opacity");
+        wallpaperContainer.classList.add("loaded");
+      }
       loadWallpaper(wallpaperUrl, taskToken);
       return;
     }
@@ -825,9 +836,13 @@ function createTile(item) {
 
   if (iconContent.startsWith("http://") || iconContent.startsWith("https://") || iconContent.startsWith("data:")) {
     const img = document.createElement("img");
-    img.src = iconContent;
     img.alt = `${item.name || ""} 图标`;
+    img.onerror = () => {
+      img.onerror = null;
+      iconWrapper.textContent = deriveFallbackIcon(item.name);
+    };
     iconWrapper.appendChild(img);
+    img.src = iconContent;
   } else if (iconContent.length > 0) {
     iconWrapper.textContent = iconContent.slice(0, 4);
   } else {
@@ -1011,11 +1026,27 @@ function formatYiyanQuote(payload) {
 
 async function loadYiyanQuote() {
   if (!greetingElement) return;
+  const cacheKey = "simpage:yiyan:v1";
+  try {
+    const cached = JSON.parse(window.sessionStorage.getItem(cacheKey) || "null");
+    const age = Date.now() - cached?.savedAt;
+    if (typeof cached?.message === "string" && cached.message.trim() && age >= 0 && age < 30 * 60 * 1000) {
+      yiyanMessage = cached.message;
+      updateGreetingDisplay();
+      return;
+    }
+  } catch (_error) {
+    // Storage may be unavailable in private browsing; the quote remains optional.
+  }
   const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
   let timeoutId = null;
+  let timedOut = false;
   try {
     if (controller) {
-      timeoutId = setTimeout(() => controller.abort(), 5000);
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, 8000);
     }
     const options = { cache: "no-cache" };
     if (controller) {
@@ -1029,12 +1060,18 @@ async function loadYiyanQuote() {
       throw new Error("一言接口响应异常");
     }
     const message = formatYiyanQuote(payload);
-    if (message) {
-      yiyanMessage = message;
-      updateGreetingDisplay();
+    if (!message) throw new Error("一言接口未返回句子");
+    yiyanMessage = message;
+    updateGreetingDisplay();
+    try {
+      window.sessionStorage.setItem(cacheKey, JSON.stringify({ message, savedAt: Date.now() }));
+    } catch (_error) {
+      // A successful quote should still be displayed when storage is disabled.
     }
   } catch (error) {
-    console.error("一言获取失败", error);
+    console.warn(timedOut || error?.name === "AbortError"
+      ? "一言请求超时，继续显示当前问候。"
+      : "一言暂时不可用，继续显示当前问候。");
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -1323,7 +1360,7 @@ function handleBackToTopVisibility() {
  * 加载壁纸
  * @param {string} wallpaperUrl - 壁纸图片 URL
  */
-function loadWallpaper(wallpaperUrl, taskToken = wallpaperTaskToken) {
+function loadWallpaper(wallpaperUrl, taskToken = wallpaperTaskToken, defaultAttempt = 0) {
   if (!wallpaperContainer || taskToken !== wallpaperTaskToken) {
     return;
   }
@@ -1335,15 +1372,24 @@ function loadWallpaper(wallpaperUrl, taskToken = wallpaperTaskToken) {
     : requestedUrl;
   const img = new Image();
   img.decoding = "async";
-  img.fetchPriority = "low";
   let settled = false;
   let timeoutId;
-  const finish = (loaded) => {
-    if (settled) return;
-    settled = true;
+  const cleanup = () => {
     window.clearTimeout(timeoutId);
     img.onload = null;
     img.onerror = null;
+    if (cancelWallpaperLoad === cancel) cancelWallpaperLoad = null;
+  };
+  const cancel = () => {
+    settled = true;
+    cleanup();
+    img.removeAttribute("src");
+  };
+  cancelWallpaperLoad = cancel;
+  const finish = (loaded, reason = "图片请求失败") => {
+    if (settled) return;
+    settled = true;
+    cleanup();
     if (!loaded) img.removeAttribute("src");
     if (taskToken !== wallpaperTaskToken) return;
     if (loaded) {
@@ -1351,19 +1397,27 @@ function loadWallpaper(wallpaperUrl, taskToken = wallpaperTaskToken) {
       wallpaperContainer.style.removeProperty("opacity");
       wallpaperContainer.classList.add("loaded");
     } else if (url !== defaultUrl) {
+      console.warn(`自定义壁纸${reason}，尝试默认壁纸。`);
       loadWallpaper(defaultUrl, taskToken);
+    } else if (defaultAttempt === 0) {
+      console.warn(`默认壁纸${reason}，稍后重试一次。`);
+      const retryId = window.setTimeout(() => {
+        if (taskToken !== wallpaperTaskToken) return;
+        cancelWallpaperLoad = null;
+        loadWallpaper(defaultUrl, taskToken, 1);
+      }, 1000);
+      cancelWallpaperLoad = () => window.clearTimeout(retryId);
     } else {
-      console.warn("默认壁纸加载失败，请稍后刷新重试。");
+      console.warn(`默认壁纸${reason}，继续使用当前背景。`);
     }
   };
   img.onload = () => finish(true);
   img.onerror = () => finish(false);
-  timeoutId = window.setTimeout(() => finish(false), 15000);
+  timeoutId = window.setTimeout(() => finish(false, "加载超时"), 20000);
   try {
     img.src = url;
   } catch (error) {
     finish(false);
-    console.error("壁纸加载出错:", error);
   }
 }
 

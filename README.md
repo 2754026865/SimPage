@@ -83,9 +83,27 @@ npm run deploy
 ## 运行时配置
 
 - `ADMIN_PASSWORD`：后台初始密码，必须通过 `wrangler secret put` 配置。
-- `UAPI_KEY`：可选的 UAPI 壁纸接口 Key。在 **SimPage Worker → 设置 → 变量和机密** 中添加同名变量，类型选择 **机密（Secret）**，填入原始 Key（不带 `Bearer ` 前缀）。未配置时使用接口的匿名额度。
 
-默认壁纸通过本站 `/api/wallpaper` 调用 [UAPI 必应每日壁纸](https://uapis.cn/docs/api-reference/get-image-bing-daily)，获取 4K 图片。Key 仅由 Worker 通过请求头发送，不出现在浏览器、图片链接或站点配置中。图片响应允许缓存 30 分钟，不使用 KV 保存壁纸；旧默认壁纸地址会自动改走这个接口，自定义图片地址保持不变。
+默认壁纸通过本站 `/api/wallpaper` 调用 `https://api.bimg.cc/today`，**无需 Key**。Worker 跟随该接口到 Bing 图片的 HTTPS 跳转，只允许 bimg/Bing 域名，限制跳转次数和图片大小。之前配置的 `UAPI_KEY` 已不再读取，可以从 Worker 的变量和机密中移除。
+
+成功图片在边缘缓存中保留最多一天，30 分钟内直接复用；过期刷新失败时可以继续使用一天以内的成功图片，不使用 KV 存储壁纸。边缘缓存可能提前被驱逐，因此前台另外内置本地备用背景，默认请求失败最多重试一次。已有的自定义壁纸继续生效，旧默认地址 `https://bing.img.run/uhd.php` 会自动改走本站接口。
+
+后台保存密码时会记录哈希算法；无算法标识的旧密码记录会兼容验证，在成功登录后自动迁移。无需重置已有密码或清空站点数据。
+
+### Cloudflare 与资源加载
+
+- CSP 仅放行 Cloudflare Analytics 所需的脚本与上报域。HTML 每次响应生成随机 nonce，供本站脚本及 Cloudflare JavaScript Detections 使用；没有开放脚本 `unsafe-inline`。带 nonce 的 HTML 不缓存，CSS、JS 和图片仍保留各自缓存策略。
+- 如果 `/api/wallpaper` 返回 `403`、`Content-Type: text/html` 且 `cf-mitigated: challenge`，这是 Cloudflare 在 Worker 运行前返回了验证页。应在 Cloudflare 安全事件中定位触发规则，调整该规则对图片/API 路径的交互质询范围；代码无法替图片请求完成验证。只针对已确认的规则和路径调整，保留其他防护。
+- 外部图标失败会显示名称首字，站点 favicon 失败会恢复本地图标。一言有 8 秒超时和 30 分钟会话缓存，失败保留当前问候。
+
+### 验证代码
+
+```bash
+npm test
+npm run test:worker
+```
+
+单元测试覆盖密码兼容及迁移、壁纸代理/缓存/重试、CSP、图标和一言降级。`test:worker` 先执行构建预检（不上传），再用本地 workerd 检查真实密码校验、HTML nonce 改写及 Cache API；上游请求为本地模拟，不读取线上 KV。真实 Cloudflare 安全规则及第三方服务可用性仍需部署后核查。
 
 > 安全说明：`wrangler.toml` 中的 KV `id` 与 Durable Object 绑定信息**不是机密**，可以随仓库公开提交。真正的机密是你的 Cloudflare 账户 API Token / `ADMIN_PASSWORD`：前者请通过 CI 的 secrets 注入，后者通过 `wrangler secret put` 写入，**永远不要写入仓库**。
 
